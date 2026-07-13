@@ -157,6 +157,26 @@ This is the quarantine file, not a production catalog. Each line preserves the o
 | `elimination_reasons` | Stable machine-readable reason codes |
 | `elimination_explanations` | Product-specific plain-language explanations, including the conflicting field and evidence reason when available |
 
+For an evidence conflict, the explanation states:
+
+1. which field caused elimination;
+2. what the input text or structured row claimed;
+3. what visual analysis found;
+4. why the workflow refused to publish an unresolved choice.
+
+Example:
+
+```json
+{
+  "elimination_reasons": ["UNRESOLVED_PRODUCT_CLASSIFICATION"],
+  "elimination_explanations": [
+    "Cause: input-text-versus-image conflict for 'category/subcategory'. Input text/structured data says 'ballet flats'; visual analysis says 'high-heeled pumps'. Evidence detail: the source describes a low-profile flat, while the image shows a pointed stiletto heel. The product was not published because choosing either value without review could make its taxonomy, filters, or enriched description incorrect."
+  ]
+}
+```
+
+The opening `Cause:` label makes the evidence path explicit. It will say whether the failure is an input-text-versus-image conflict, missing or unusable visual evidence, incomplete or invalid input data, ambiguous product identity, model-output validation failure, or incomplete enrichment. A model failure is never described as an evidence conflict unless the model returned a specific conflict between the two sources.
+
 ### When a product is eliminated
 
 | Condition | Why it cannot enter the production JSONL |

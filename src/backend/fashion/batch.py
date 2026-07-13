@@ -17,15 +17,15 @@ from backend.fashion.taxonomy import ATTRIBUTE_VERSION, TAXONOMY_VERSION
 logger = logging.getLogger("catalog_enrichment.fashion.batch")
 
 ELIMINATION_EXPLANATIONS = {
-    "DUPLICATE_NAME_IMAGE": "Multiple source rows share this product name and image without a stable source identifier, so the workflow cannot determine whether they are distinct products.",
-    "IMAGE_NOT_FOUND": "The referenced product image was not found, so visual enrichment and canonical publication could not be completed.",
-    "IMAGE_UNREADABLE": "The referenced file could not be validated as a readable image.",
-    "MISSING_REQUIRED_FIELD": "A required product name or description is missing.",
-    "INVALID_PRICE": "The supplied price is missing, negative, or not numeric.",
-    "MODEL_ENRICHMENT_FAILED": "The model output remained invalid after the bounded retry attempts.",
-    "UNRESOLVED_PRODUCT_CLASSIFICATION": "The source text and image do not support one unambiguous canonical product classification.",
-    "UNRESOLVED_EVIDENCE_CONFLICT": "The source text and image disagree on a product attribute, so the product is withheld because generated prose may contain the disputed fact.",
-    "ENRICHMENT_NOT_AVAILABLE": "The workflow could not produce a publication-ready enrichment for this product.",
+    "DUPLICATE_NAME_IMAGE": "Cause: ambiguous product identity. Multiple input rows use the same product name and image but do not provide stable source IDs. The workflow cannot determine whether they are duplicates, variants, or separate products, so none of the ambiguous rows is published.",
+    "IMAGE_NOT_FOUND": "Cause: missing visual evidence. The referenced image was not found, so visual enrichment could not verify the product classification or ground the enriched description.",
+    "IMAGE_UNREADABLE": "Cause: unusable visual evidence. The referenced image file could not be decoded, so visual analysis could not be completed.",
+    "MISSING_REQUIRED_FIELD": "Cause: incomplete input data. The input row is missing a required product name or description, so a usable enriched catalog record cannot be created.",
+    "INVALID_PRICE": "Cause: invalid input data. The input price is missing, negative, or not numeric, so the record fails the publication contract.",
+    "MODEL_ENRICHMENT_FAILED": "Cause: model-output validation failure. After three attempts, the model output still failed schema, taxonomy, value, applicability, or evidence validation. This does not by itself mean that the input text conflicts with the image.",
+    "UNRESOLVED_PRODUCT_CLASSIFICATION": "Cause: input-text-versus-image conflict. The input text or structured data and visual analysis identify different product types. Publishing either classification without review would create an unverified catalog identity.",
+    "UNRESOLVED_EVIDENCE_CONFLICT": "Cause: input-text-versus-image conflict. The input text or structured data and visual analysis disagree on at least one product attribute. The disputed fact may affect filters or the enriched description, so the product is not published.",
+    "ENRICHMENT_NOT_AVAILABLE": "Cause: incomplete enrichment. The workflow could not produce a complete, internally consistent, publication-ready record.",
 }
 
 
@@ -50,12 +50,25 @@ def _duplicate_key(row: dict[str, Any]) -> tuple[str, str]:
 
 def _elimination_explanations(reasons: list[str], result: dict[str, Any] | None = None, detail: str = "") -> list[str]:
     explanations: list[str] = []
+    has_conflict_detail = False
     if result:
         for conflict in result.get("conflicts") or []:
             if isinstance(conflict, dict) and conflict.get("reason"):
+                has_conflict_detail = True
                 field = "category/subcategory" if conflict.get("field") == "product_type" else conflict.get("field")
-                explanations.append(f"{field}: {conflict['reason']}")
+                source_value = conflict.get("source_value")
+                visual_value = conflict.get("visual_value")
+                comparison = ""
+                if source_value not in (None, "") and visual_value not in (None, ""):
+                    comparison = f" Input text/structured data says {source_value!r}; visual analysis says {visual_value!r}."
+                explanations.append(
+                    f"Cause: input-text-versus-image conflict for {field!r}.{comparison} "
+                    f"Evidence detail: {conflict['reason']} The product was not published because choosing either "
+                    "value without review could make its taxonomy, filters, or enriched description incorrect."
+                )
     for reason in reasons:
+        if has_conflict_detail and reason in {"UNRESOLVED_PRODUCT_CLASSIFICATION", "UNRESOLVED_EVIDENCE_CONFLICT"}:
+            continue
         explanation = ELIMINATION_EXPLANATIONS.get(reason, reason)
         if explanation not in explanations:
             explanations.append(explanation)
@@ -95,7 +108,7 @@ def _review_status(value: dict[str, Any]) -> str:
 
 def _review_rows(record_id: str, row_number: int, source: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
     conflicts = result.get("conflicts") or []
-    conflict_reasons = {item.get("field"): item.get("reason", "") for item in conflicts if isinstance(item, dict)}
+    conflict_details = {item.get("field"): item for item in conflicts if isinstance(item, dict)}
     product_type = result["product_type"]
     category, subcategory = _classification(product_type["value"])
     rows = [{
@@ -107,8 +120,8 @@ def _review_rows(record_id: str, row_number: int, source: dict[str, Any], result
         "enriched_value": f"{category} / {subcategory}",
         "confidence": product_type.get("confidence", ""),
         "provenance": _sources(product_type),
-        "status": "review" if "product_type" in conflict_reasons else _review_status(product_type),
-        "attention_reason": conflict_reasons.get("product_type", ""),
+        "status": "review" if "product_type" in conflict_details else _review_status(product_type),
+        "attention_reason": (conflict_details.get("product_type") or {}).get("reason", ""),
     }]
     for field, value in (result.get("attributes") or {}).items():
         if not isinstance(value, dict):
@@ -118,12 +131,12 @@ def _review_rows(record_id: str, row_number: int, source: dict[str, Any], result
             "source_row": row_number,
             "product_name": source.get("name", ""),
             "field": field,
-            "original_value": "",
-            "enriched_value": value.get("value") if value.get("value") is not None else "",
+            "original_value": (conflict_details.get(field) or {}).get("source_value", ""),
+            "enriched_value": (conflict_details.get(field) or {}).get("visual_value", value.get("value") if value.get("value") is not None else ""),
             "confidence": value.get("confidence", ""),
             "provenance": _sources(value),
-            "status": "review" if field in conflict_reasons else _review_status(value),
-            "attention_reason": conflict_reasons.get(field, ""),
+            "status": "review" if field in conflict_details else _review_status(value),
+            "attention_reason": (conflict_details.get(field) or {}).get("reason", ""),
         })
     for claim in result.get("unsupported_claims") or []:
         rows.append({

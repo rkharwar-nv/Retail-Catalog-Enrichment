@@ -211,7 +211,7 @@ def test_enriched_output_is_flat_and_review_is_explanatory(mock_enrich, tmp_path
 @patch("backend.fashion.batch.enrich_product")
 def test_classification_conflict_is_eliminated(mock_enrich, tmp_path, sample_image_bytes):
     result = _valid_result()
-    result["conflicts"] = [{"field": "product_type", "reason": "Source and image disagree."}]
+    result["conflicts"] = [{"field": "product_type", "source_value": "skirt", "visual_value": "dress", "reason": "Source and image disagree."}]
     mock_enrich.return_value = result
     images = tmp_path / "images"
     images.mkdir()
@@ -229,13 +229,15 @@ def test_classification_conflict_is_eliminated(mock_enrich, tmp_path, sample_ima
     assert not (tmp_path / "output" / "enriched_products.jsonl").exists()
     eliminated = json.loads((tmp_path / "output" / "eliminated_products.jsonl").read_text())
     assert eliminated["elimination_reasons"] == ["UNRESOLVED_PRODUCT_CLASSIFICATION"]
-    assert eliminated["elimination_explanations"][0] == "category/subcategory: Source and image disagree."
+    assert len(eliminated["elimination_explanations"]) == 1
+    assert "Input text/structured data says 'skirt'" in eliminated["elimination_explanations"][0]
+    assert "visual analysis says 'dress'" in eliminated["elimination_explanations"][0]
 
 
 @patch("backend.fashion.batch.enrich_product")
 def test_attribute_conflict_eliminates_product(mock_enrich, tmp_path, sample_image_bytes):
     result = _valid_result()
-    result["conflicts"] = [{"field": "pattern", "reason": "Source and image disagree."}]
+    result["conflicts"] = [{"field": "pattern", "source_value": "solid", "visual_value": "floral", "reason": "Source and image disagree."}]
     mock_enrich.return_value = result
     images = tmp_path / "images"
     images.mkdir()
@@ -250,7 +252,13 @@ def test_attribute_conflict_eliminates_product(mock_enrich, tmp_path, sample_ima
     assert not (tmp_path / "output" / "enriched_products.jsonl").exists()
     eliminated = json.loads((tmp_path / "output" / "eliminated_products.jsonl").read_text())
     assert eliminated["elimination_reasons"] == ["UNRESOLVED_EVIDENCE_CONFLICT"]
-    assert eliminated["elimination_explanations"][0] == "pattern: Source and image disagree."
+    assert len(eliminated["elimination_explanations"]) == 1
+    assert "Input text/structured data says 'solid'" in eliminated["elimination_explanations"][0]
+    assert "visual analysis says 'floral'" in eliminated["elimination_explanations"][0]
+    review = list(csv.DictReader((tmp_path / "output" / "enrichment_review.csv").open()))
+    pattern = next(row for row in review if row["field"] == "pattern")
+    assert pattern["original_value"] == "solid"
+    assert pattern["enriched_value"] == "floral"
 
 
 def test_ambiguous_duplicates_are_eliminated_without_model_calls(tmp_path, sample_image_bytes):
