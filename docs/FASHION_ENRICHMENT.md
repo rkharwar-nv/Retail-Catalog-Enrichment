@@ -18,6 +18,7 @@ flowchart LR
 
     O --> T[Enforce fashion taxonomy<br/>and evidence rules]
     T -->|Accepted values| C[enriched_products.jsonl<br/>production catalog]
+    T -->|Failed or unresolved product| E[eliminated_products.jsonl]
     T -->|All fields| R
 
     R --> H[Catalog review<br/>focus on review and failed rows]
@@ -99,6 +100,7 @@ python -m backend.fashion.batch \
 ```text
 output/
 ├── enriched_products.jsonl
+├── eliminated_products.jsonl
 ├── enrichment_review.csv
 ├── batch_summary.json
 └── run_manifest.json
@@ -106,12 +108,12 @@ output/
 
 ### `enriched_products.jsonl`
 
-This is the production catalog to ingest. Each line is one flat JSON product. It preserves every original CSV field, normalizes `category` and `subcategory`, adds accepted fashion attributes, and adds one grounded `enriched_description`.
+This is the production catalog to ingest. Each line is one flat JSON product that passed the publication gate. It preserves every original CSV field, normalizes `category` and `subcategory`, adds accepted nonconflicting fashion attributes, and adds one grounded `enriched_description`.
 
 | Field | Meaning |
 |---|---|
 | Original CSV fields | Preserved source values; normalized classification replaces source `category` and `subcategory` after successful enrichment |
-| `record_id` | Existing product ID/SKU when supplied; otherwise a run-local ID derived from filename and source row |
+| `record_id` | Existing product ID/SKU when supplied; otherwise a deterministic hash of source name, image, and URL |
 | `source_row` | Original CSV row number, including the header as row 1 |
 | `category` | Canonical broad category, such as `apparel`, `footwear`, `bags`, `eyewear`, or `jewelry` |
 | `subcategory` | Canonical product class, such as `dresses`, `skirts`, `boots`, or `shoulder_bags` |
@@ -120,13 +122,13 @@ This is the production catalog to ingest. Each line is one flat JSON product. It
 | `enriched_description` | Natural description grounded in the image and trustworthy supplied facts; use this for semantic embedding and optional display |
 | `currency` | Added only when `--currency` is supplied |
 
-Unknown, disputed, or inapplicable attribute values are omitted. Confidence, provenance, statuses, conflicts, and processing details are intentionally excluded from this file.
+Unknown or inapplicable attribute values are omitted. A product with any unresolved image/text conflict is eliminated rather than published because the generated description may also contain the disputed fact. Confidence, provenance, statuses, conflicts, and processing details are intentionally excluded from this file.
 
 Example:
 
 ```json
 {
-  "record_id": "products:22",
+  "record_id": "generated:2b682a3db8471740",
   "source_row": 22,
   "category": "apparel",
   "subcategory": "dresses",
@@ -141,6 +143,20 @@ Example:
   "enriched_description": "A navy midi dress with a V-neckline and wrap-style front. The supplied information identifies the fabric as 100% cotton."
 }
 ```
+
+The generated fallback ID is stable when the CSV is reordered, but a supplied `product_id`, `sku`, or `id` remains strongly preferred. If multiple rows share the same name and image without a stable supplied ID, all members of that ambiguous group are eliminated rather than assigned arbitrary identities.
+
+### `eliminated_products.jsonl`
+
+This is the quarantine file, not a production catalog. Each line preserves the original product, `record_id`, `source_row`, and an `elimination_reasons` array. A product is eliminated for:
+
+- missing or unreadable required evidence;
+- invalid required input;
+- model enrichment that remains invalid after bounded retries;
+- unresolved product classification or attribute evidence conflict;
+- duplicate name/image identity without a stable source ID.
+
+Fix or review these records, then rerun them before adding them to the production catalog.
 
 ### `enrichment_review.csv`
 
@@ -166,7 +182,7 @@ Status definitions:
 | `accepted` | Usable value supported by permitted evidence | Included in the JSONL when it is an attribute or classification |
 | `review` | Conflict, unsupported claim, or material uncertainty requires attention | Disputed attribute is not promoted as trusted catalog data |
 | `unknown` | Available evidence cannot establish the value; this is not an error | Omitted from the JSONL |
-| `failed` | The row could not produce valid enrichment | Original product fields remain in JSONL without model enrichment |
+| `failed` | The row could not produce valid enrichment | Product is written to `eliminated_products.jsonl`, not the production JSONL |
 
 Provenance definitions:
 
@@ -202,13 +218,15 @@ Validation occurs in three stages:
 |---|---|---|
 | Valid input and enrichment with no material conflict | `PASS` | Accepted fields enter the JSONL |
 | Optional attribute cannot be established | May remain `PASS` | Field is `unknown` and omitted from JSONL |
-| Missing image | `REVIEW` | Original row is retained; visual enrichment is skipped |
-| Text/image disagreement | `REVIEW` | Conflict is explained; disputed value is not silently trusted |
+| Missing image | `REVIEW` | Product is eliminated because visual enrichment cannot run |
+| Attribute text/image disagreement | `REVIEW` | Entire product is eliminated because generated prose may contain the disputed fact |
+| Product-classification disagreement | `REVIEW` | Entire product is eliminated pending resolution |
 | Unsupported objective claim | `REVIEW` | Claim is reported and excluded from grounded content |
-| Missing name or description | `FAIL` | `input_validation` row is marked `failed` |
-| Invalid or negative price | `FAIL` | `input_validation` row is marked `failed` |
-| Image exists but is unreadable | `FAIL` | `input_validation` row is marked `failed` |
-| Model response remains invalid after three attempts | `FAIL` | `processing` row is marked `failed`; original fields remain in JSONL |
+| Duplicate name and image without stable source ID | `REVIEW` | All ambiguous rows are eliminated without model calls |
+| Missing name or description | `FAIL` | `input_validation` is marked failed and product is eliminated |
+| Invalid or negative price | `FAIL` | `input_validation` is marked failed and product is eliminated |
+| Image exists but is unreadable | `FAIL` | `input_validation` is marked failed and product is eliminated |
+| Model response remains invalid after three attempts | `FAIL` | `processing` is marked failed and product is eliminated |
 
 Model output is rejected when it contains an unknown classification, an attribute that does not apply to the classification, a value outside a controlled vocabulary, invalid provenance, an image-only composition or care claim, or no grounded enriched description. Harmless structural variations are normalized before validation; invalid results receive at most three total attempts.
 
@@ -216,7 +234,7 @@ Model output is rejected when it contains an unknown classification, an attribut
 
 ### `batch_summary.json`
 
-Reports total, pass, review, fail, and skipped record counts. These are operational dispositions, not a composite truth or quality score.
+Reports total, ready, eliminated, pass, review, fail, and skipped record counts. These are operational dispositions, not a composite truth or quality score.
 
 ### `run_manifest.json`
 
@@ -235,7 +253,7 @@ Records the input path and hash, image directory, taxonomy versions, locale, cur
 
 - One local image per CSV row
 - Default column names only
-- No duplicate detection
+- Exact duplicate name/image ambiguity is quarantined; broader entity resolution and fuzzy duplicate detection are not included
 - No style/variant reconstruction without stable identifiers
 - No inventory or availability inference
 - No Elasticsearch indexing or embedding generation

@@ -276,7 +276,8 @@ python -m backend.fashion.batch \
 
 The batch produces two primary files:
 
-- `enriched_products.jsonl` — one flat product per line, ready for catalog or Elasticsearch ingestion. It preserves the source fields, replaces category/subcategory with their canonical values, adds accepted fashion attributes, and provides one visually grounded `enriched_description` for semantic indexing. It does not contain confidence or audit metadata.
+- `enriched_products.jsonl` — one flat, publication-ready product per line. It contains only successfully enriched products with canonical classification and no unresolved classification or conflicted attributes.
+- `eliminated_products.jsonl` — original products withheld from the production catalog because of failed enrichment, missing evidence, ambiguous duplicate identity, or unresolved classification.
 - `enrichment_review.csv` — one row per classification or attribute, showing the original and enriched values, confidence, provenance, review status, attention reason, and original CSV row number.
 
 `batch_summary.json` reports the run counts, while `run_manifest.json` records the input and taxonomy versions for reproducibility.

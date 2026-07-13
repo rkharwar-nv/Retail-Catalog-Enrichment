@@ -131,7 +131,7 @@ def test_validation_only_writes_reports(tmp_path, sample_image_bytes):
 
     summary = run_batch(csv_path, images, output, validate_only=True)
 
-    assert summary == {"total": 1, "pass": 1, "review": 0, "fail": 0, "skipped": 0, "validate_only": True}
+    assert summary == {"total": 1, "ready": 0, "eliminated": 0, "pass": 1, "review": 0, "fail": 0, "skipped": 0, "validate_only": True}
     assert (output / "enrichment_review.csv").exists()
     assert json.loads((output / "batch_summary.json").read_text())["pass"] == 1
 
@@ -172,6 +172,8 @@ def test_missing_image_is_reported_for_review(tmp_path):
     assert review["field"] == "image"
     assert review["status"] == "review"
     assert review["attention_reason"] == "IMAGE_NOT_FOUND"
+    eliminated = json.loads((output / "eliminated_products.jsonl").read_text())
+    assert eliminated["elimination_reasons"] == ["IMAGE_NOT_FOUND"]
 
 
 @patch("backend.fashion.batch.enrich_product", return_value=_valid_result())
@@ -197,11 +199,77 @@ def test_enriched_output_is_flat_and_review_is_explanatory(mock_enrich, tmp_path
     assert record["pattern"] == "floral"
     assert "product_type" not in record
     assert "semantic_search_text" not in record
+    assert record["record_id"].startswith("generated:")
 
     review = list(csv.DictReader((output / "enrichment_review.csv").open()))
     assert review[0]["field"] == "category/subcategory"
     assert review[0]["confidence"] == "0.9"
     assert review[0]["provenance"] == "image"
+
+
+@patch("backend.fashion.batch.enrich_product")
+def test_classification_conflict_is_eliminated(mock_enrich, tmp_path, sample_image_bytes):
+    result = _valid_result()
+    result["conflicts"] = [{"field": "product_type", "reason": "Source and image disagree."}]
+    mock_enrich.return_value = result
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "dress.png").write_bytes(sample_image_bytes)
+    csv_path = tmp_path / "products.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["category", "subcategory", "name", "description", "price", "image"])
+        writer.writeheader()
+        writer.writerow({"category": "apparel", "subcategory": "skirt", "name": "Product", "description": "Description", "price": "20", "image": "/images/dress.png"})
+
+    summary = run_batch(csv_path, images, tmp_path / "output")
+
+    assert summary["ready"] == 0
+    assert summary["eliminated"] == 1
+    assert not (tmp_path / "output" / "enriched_products.jsonl").exists()
+    eliminated = json.loads((tmp_path / "output" / "eliminated_products.jsonl").read_text())
+    assert eliminated["elimination_reasons"] == ["UNRESOLVED_PRODUCT_CLASSIFICATION"]
+
+
+@patch("backend.fashion.batch.enrich_product")
+def test_attribute_conflict_eliminates_product(mock_enrich, tmp_path, sample_image_bytes):
+    result = _valid_result()
+    result["conflicts"] = [{"field": "pattern", "reason": "Source and image disagree."}]
+    mock_enrich.return_value = result
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "dress.png").write_bytes(sample_image_bytes)
+    csv_path = tmp_path / "products.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["category", "subcategory", "name", "description", "price", "image"])
+        writer.writeheader()
+        writer.writerow({"category": "apparel", "subcategory": "dress", "name": "Product", "description": "Description", "price": "20", "image": "/images/dress.png"})
+
+    run_batch(csv_path, images, tmp_path / "output")
+    assert not (tmp_path / "output" / "enriched_products.jsonl").exists()
+    eliminated = json.loads((tmp_path / "output" / "eliminated_products.jsonl").read_text())
+    assert eliminated["elimination_reasons"] == ["UNRESOLVED_EVIDENCE_CONFLICT"]
+
+
+def test_ambiguous_duplicates_are_eliminated_without_model_calls(tmp_path, sample_image_bytes):
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "bag.png").write_bytes(sample_image_bytes)
+    csv_path = tmp_path / "products.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["name", "description", "price", "image"])
+        writer.writeheader()
+        writer.writerow({"name": "Same Bag", "description": "First", "price": "20", "image": "/images/bag.png"})
+        writer.writerow({"name": "Same Bag", "description": "Second", "price": "30", "image": "/images/bag.png"})
+
+    with patch("backend.fashion.batch.enrich_product") as mock_enrich:
+        summary = run_batch(csv_path, images, tmp_path / "output")
+
+    assert summary["ready"] == 0
+    assert summary["eliminated"] == 2
+    assert mock_enrich.call_count == 0
+    eliminated = [json.loads(line) for line in (tmp_path / "output" / "eliminated_products.jsonl").read_text().splitlines()]
+    assert eliminated[0]["record_id"] == eliminated[1]["record_id"]
+    assert eliminated[0]["elimination_reasons"] == ["DUPLICATE_NAME_IMAGE"]
 
 
 @patch("backend.fashion.service.enrich_with_omni")
