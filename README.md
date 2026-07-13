@@ -31,6 +31,7 @@ A GenAI-powered catalog enrichment system that transforms basic product images i
 - **Rich VLM Product JSON**: Generate an image-grounded JSON object with detailed visual product attributes in a dedicated UI tab
 - **Product Web Insights**: Use a Deep Agents research agent with Exa search to summarize current product pros, cons, use cases, and online insights in a dedicated UI tab
 - **Modular API**: Separate endpoints for VLM analysis, rich product JSON, FAQ generation, product web insights, image generation, 3D asset generation, and protocol schema export
+- **Fashion Catalog Batch Enrichment**: Additive CLI workflow for validating and enriching fashion CSV/image batches with the existing configured Nemotron models
 
 ## Documentation
 
@@ -238,6 +239,49 @@ The system provides the following endpoints:
 - `POST /generate/variation` - Image generation with FLUX
 - `POST /generate/3d` - 3D asset generation with TRELLIS
 - `POST /protocols/generate` - ACP & UCP protocol schema generation
+
+## Fashion Catalog Batch Enrichment
+
+The fashion workflow sends each image and its CSV row together to the configured Nemotron Omni VLM. It reuses the same `shared/config/config.yaml`, `NGC_API_KEY`, and OpenAI-compatible client setup as the existing application, without changing generic API behavior.
+
+Remote OpenAI-compatible endpoints can be selected without editing YAML:
+
+```bash
+export VLM_API_BASE_URL=https://integrate.api.nvidia.com/v1
+export VLM_MODEL=nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+```
+
+When unset, the workflow continues using the existing VLM configuration in `shared/config/config.yaml`.
+
+Validate a catalog without model calls:
+
+```bash
+python -m backend.fashion.batch \
+  --input-csv /path/to/products.csv \
+  --images-dir /path/to/images \
+  --output-dir /path/to/output \
+  --validate-only
+```
+
+Run enrichment:
+
+```bash
+python -m backend.fashion.batch \
+  --input-csv /path/to/products.csv \
+  --images-dir /path/to/images \
+  --output-dir /path/to/output \
+  --locale en-US \
+  --currency USD
+```
+
+The batch produces two primary files:
+
+- `enriched_products.jsonl` — one flat product per line, ready for catalog or Elasticsearch ingestion. It preserves the source fields, replaces category/subcategory with their canonical values, adds accepted fashion attributes, and provides one visually grounded `enriched_description` for semantic indexing. It does not contain confidence or audit metadata.
+- `enrichment_review.csv` — one row per classification or attribute, showing the original and enriched values, confidence, provenance, review status, attention reason, and original CSV row number.
+
+`batch_summary.json` reports the run counts, while `run_manifest.json` records the input and taxonomy versions for reproducibility.
+
+See **[Fashion Enrichment Guide](docs/FASHION_ENRICHMENT.md)** for the complete input contract, output field definitions, review statuses, provenance meanings, Elasticsearch guidance, examples, and current limitations.
 
 ### Image Input Guidance
 

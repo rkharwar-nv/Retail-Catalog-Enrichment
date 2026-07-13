@@ -55,7 +55,10 @@ class Config:
         return self._config_data.get(section, {}) or {}
         
     def get_vlm_config(self) -> Dict[str, str]:
-        return self._get_section_config('vlm', ['url', 'model'])
+        config = self._get_section_config('vlm', ['url', 'model'])
+        config['url'] = os.getenv('VLM_API_BASE_URL') or config['url']
+        config['model'] = os.getenv('VLM_MODEL') or config['model']
+        return config
         
     def get_llm_config(self) -> Dict[str, str]:
         return self._get_section_config('llm', ['url', 'model'])

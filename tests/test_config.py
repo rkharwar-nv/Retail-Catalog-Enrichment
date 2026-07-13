@@ -68,8 +68,10 @@ class TestConfigLoading:
 class TestVLMConfig:
     """Tests for VLM configuration retrieval."""
     
-    def test_get_vlm_config_success(self, tmp_path, sample_config_dict):
+    def test_get_vlm_config_success(self, tmp_path, sample_config_dict, monkeypatch):
         """Test successful VLM config retrieval."""
+        monkeypatch.delenv("VLM_API_BASE_URL", raising=False)
+        monkeypatch.delenv("VLM_MODEL", raising=False)
         config_file = tmp_path / "config.yaml"
         with open(config_file, 'w') as f:
             yaml.dump(sample_config_dict, f)
@@ -79,6 +81,15 @@ class TestVLMConfig:
         
         assert vlm_config["url"] == "http://test-vlm:8000/v1"
         assert vlm_config["model"] == "test-vlm-model"
+
+    def test_get_vlm_config_environment_override(self, tmp_path, sample_config_dict, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(sample_config_dict))
+        monkeypatch.setenv("VLM_API_BASE_URL", "https://remote-vlm.example/v1")
+        monkeypatch.setenv("VLM_MODEL", "remote-vlm-model")
+
+        result = Config(config_path=str(config_file)).get_vlm_config()
+        assert result == {"url": "https://remote-vlm.example/v1", "model": "remote-vlm-model"}
     
     def test_get_vlm_config_missing_section(self, tmp_path):
         """Test error when VLM section is missing."""
@@ -137,7 +148,7 @@ class TestLLMConfig:
         
         assert llm_config["url"] == "http://test-llm:8000/v1"
         assert llm_config["model"] == "test-llm-model"
-    
+
     def test_get_llm_config_missing_section(self, tmp_path):
         """Test error when LLM section is missing."""
         config_data = {"vlm": {"url": "test", "model": "test"}}
@@ -281,4 +292,3 @@ class TestGetConfigSingleton:
             assert "shared" in str(config.config_path)
         except FileNotFoundError:
             pytest.skip("Default config file not found")
-
