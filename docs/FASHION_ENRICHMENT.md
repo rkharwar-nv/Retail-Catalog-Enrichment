@@ -148,13 +148,39 @@ The generated fallback ID is stable when the CSV is reordered, but a supplied `p
 
 ### `eliminated_products.jsonl`
 
-This is the quarantine file, not a production catalog. Each line preserves the original product, `record_id`, `source_row`, and an `elimination_reasons` array. A product is eliminated for:
+This is the quarantine file, not a production catalog. Each line preserves the original product and adds:
 
-- missing or unreadable required evidence;
-- invalid required input;
-- model enrichment that remains invalid after bounded retries;
-- unresolved product classification or attribute evidence conflict;
-- duplicate name/image identity without a stable source ID.
+| Field | Meaning |
+|---|---|
+| `record_id` | Supplied stable ID or deterministic fallback ID |
+| `source_row` | Original CSV row number |
+| `elimination_reasons` | Stable machine-readable reason codes |
+| `elimination_explanations` | Product-specific plain-language explanations, including the conflicting field and evidence reason when available |
+
+### When a product is eliminated
+
+| Condition | Why it cannot enter the production JSONL |
+|---|---|
+| Required name or description is missing | The product cannot be identified or described reliably |
+| Price is invalid or negative | The source record fails the required input contract |
+| Image is missing or unreadable | Joint image/text enrichment cannot be completed |
+| Model output remains invalid after three attempts | No schema-valid, taxonomy-valid enrichment is available |
+| Source and image disagree on product classification | Publishing either classification would silently resolve an unresolved identity conflict |
+| Source and image disagree on an attribute | The enriched description may also contain the disputed fact, so removing only the structured field is insufficient |
+| Multiple rows share name and image without stable IDs | The workflow cannot safely determine whether they are duplicates, variants, or distinct products |
+
+Unknown optional attributes do **not** eliminate a product. Unsupported source claims do **not** eliminate a product when the model successfully excludes them from grounded content. A product is eliminated only when the remaining record cannot be treated as internally consistent and publication-ready.
+
+Machine-readable elimination codes include:
+
+- `MISSING_REQUIRED_FIELD`
+- `INVALID_PRICE`
+- `IMAGE_NOT_FOUND`
+- `IMAGE_UNREADABLE`
+- `MODEL_ENRICHMENT_FAILED`
+- `UNRESOLVED_PRODUCT_CLASSIFICATION`
+- `UNRESOLVED_EVIDENCE_CONFLICT`
+- `DUPLICATE_NAME_IMAGE`
 
 Fix or review these records, then rerun them before adding them to the production catalog.
 

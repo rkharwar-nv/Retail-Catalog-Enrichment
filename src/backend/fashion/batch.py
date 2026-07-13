@@ -16,6 +16,18 @@ from backend.fashion.taxonomy import ATTRIBUTE_VERSION, TAXONOMY_VERSION
 
 logger = logging.getLogger("catalog_enrichment.fashion.batch")
 
+ELIMINATION_EXPLANATIONS = {
+    "DUPLICATE_NAME_IMAGE": "Multiple source rows share this product name and image without a stable source identifier, so the workflow cannot determine whether they are distinct products.",
+    "IMAGE_NOT_FOUND": "The referenced product image was not found, so visual enrichment and canonical publication could not be completed.",
+    "IMAGE_UNREADABLE": "The referenced file could not be validated as a readable image.",
+    "MISSING_REQUIRED_FIELD": "A required product name or description is missing.",
+    "INVALID_PRICE": "The supplied price is missing, negative, or not numeric.",
+    "MODEL_ENRICHMENT_FAILED": "The model output remained invalid after the bounded retry attempts.",
+    "UNRESOLVED_PRODUCT_CLASSIFICATION": "The source text and image do not support one unambiguous canonical product classification.",
+    "UNRESOLVED_EVIDENCE_CONFLICT": "The source text and image disagree on a product attribute, so the product is withheld because generated prose may contain the disputed fact.",
+    "ENRICHMENT_NOT_AVAILABLE": "The workflow could not produce a publication-ready enrichment for this product.",
+}
+
 
 def _has_source_id(row: dict[str, Any]) -> bool:
     return any(str(row.get(key) or "").strip() for key in ("product_id", "sku", "id"))
@@ -34,6 +46,22 @@ def _duplicate_key(row: dict[str, Any]) -> tuple[str, str]:
     name = str(row.get("name") or "").strip().casefold()
     image = Path(str(row.get("image") or "")).name.casefold()
     return name, image
+
+
+def _elimination_explanations(reasons: list[str], result: dict[str, Any] | None = None, detail: str = "") -> list[str]:
+    explanations: list[str] = []
+    if result:
+        for conflict in result.get("conflicts") or []:
+            if isinstance(conflict, dict) and conflict.get("reason"):
+                field = "category/subcategory" if conflict.get("field") == "product_type" else conflict.get("field")
+                explanations.append(f"{field}: {conflict['reason']}")
+    for reason in reasons:
+        explanation = ELIMINATION_EXPLANATIONS.get(reason, reason)
+        if explanation not in explanations:
+            explanations.append(explanation)
+    if detail:
+        explanations.append(f"Validation detail: {detail}")
+    return explanations
 
 
 def _input_hash(path: Path) -> str:
@@ -192,15 +220,24 @@ def run_batch(
                 catalog_records.append(_catalog_record(record_id, row_number, source, result, currency))
             elif not validate_only:
                 reasons = ["UNRESOLVED_PRODUCT_CLASSIFICATION" if product_type_conflict or product_type_unresolved else "UNRESOLVED_EVIDENCE_CONFLICT"]
-                eliminated_records.append({**source, "record_id": record_id, "source_row": row_number, "elimination_reasons": reasons})
+                eliminated_records.append({
+                    **source, "record_id": record_id, "source_row": row_number,
+                    "elimination_reasons": reasons,
+                    "elimination_explanations": _elimination_explanations(reasons, result),
+                })
         elif not validate_only:
             reasons = []
             if duplicate:
                 reasons.append("DUPLICATE_NAME_IMAGE")
             reasons.extend(audit.issues)
             if failure_reason:
-                reasons.append(f"MODEL_ENRICHMENT_FAILED: {failure_reason}")
-            eliminated_records.append({**source, "record_id": record_id, "source_row": row_number, "elimination_reasons": reasons or ["ENRICHMENT_NOT_AVAILABLE"]})
+                reasons.append("MODEL_ENRICHMENT_FAILED")
+            reasons = reasons or ["ENRICHMENT_NOT_AVAILABLE"]
+            eliminated_records.append({
+                **source, "record_id": record_id, "source_row": row_number,
+                "elimination_reasons": reasons,
+                "elimination_explanations": _elimination_explanations(reasons, detail=failure_reason),
+            })
             if audit.issues:
                 input_failed = audit.disposition == "FAIL"
                 review_rows.append({

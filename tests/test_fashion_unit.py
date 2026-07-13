@@ -174,6 +174,7 @@ def test_missing_image_is_reported_for_review(tmp_path):
     assert review["attention_reason"] == "IMAGE_NOT_FOUND"
     eliminated = json.loads((output / "eliminated_products.jsonl").read_text())
     assert eliminated["elimination_reasons"] == ["IMAGE_NOT_FOUND"]
+    assert "visual enrichment" in eliminated["elimination_explanations"][0]
 
 
 @patch("backend.fashion.batch.enrich_product", return_value=_valid_result())
@@ -228,6 +229,7 @@ def test_classification_conflict_is_eliminated(mock_enrich, tmp_path, sample_ima
     assert not (tmp_path / "output" / "enriched_products.jsonl").exists()
     eliminated = json.loads((tmp_path / "output" / "eliminated_products.jsonl").read_text())
     assert eliminated["elimination_reasons"] == ["UNRESOLVED_PRODUCT_CLASSIFICATION"]
+    assert eliminated["elimination_explanations"][0] == "category/subcategory: Source and image disagree."
 
 
 @patch("backend.fashion.batch.enrich_product")
@@ -248,6 +250,7 @@ def test_attribute_conflict_eliminates_product(mock_enrich, tmp_path, sample_ima
     assert not (tmp_path / "output" / "enriched_products.jsonl").exists()
     eliminated = json.loads((tmp_path / "output" / "eliminated_products.jsonl").read_text())
     assert eliminated["elimination_reasons"] == ["UNRESOLVED_EVIDENCE_CONFLICT"]
+    assert eliminated["elimination_explanations"][0] == "pattern: Source and image disagree."
 
 
 def test_ambiguous_duplicates_are_eliminated_without_model_calls(tmp_path, sample_image_bytes):
@@ -270,6 +273,7 @@ def test_ambiguous_duplicates_are_eliminated_without_model_calls(tmp_path, sampl
     eliminated = [json.loads(line) for line in (tmp_path / "output" / "eliminated_products.jsonl").read_text().splitlines()]
     assert eliminated[0]["record_id"] == eliminated[1]["record_id"]
     assert eliminated[0]["elimination_reasons"] == ["DUPLICATE_NAME_IMAGE"]
+    assert "cannot determine" in eliminated[0]["elimination_explanations"][0]
 
 
 @patch("backend.fashion.service.enrich_with_omni")
