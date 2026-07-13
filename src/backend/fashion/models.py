@@ -43,14 +43,18 @@ CONTROLLED ATTRIBUTE VALUES:
 
 RULES:
 - Return exactly one allowed product_type, or status needs_review when identity is unresolved.
-- The image is authoritative for visible product type, color, pattern, shape, construction, and closures. Visible functional form/components determine product type; do not let a broad supplied subcategory override them.
-- Source text is authoritative for exact composition, care, dimensions, and other nonvisual supplied facts.
+- The image is authoritative for visible product type, color, pattern, shape, construction, and directly visible exterior components. Visible functional form/components determine product type; do not let a broad supplied subcategory override them.
+- Source text is authoritative for exact composition, care, dimensions, hidden or internal features, and other nonvisual supplied facts. Never create a composition or care conflict from appearance.
+- Multiple closure components may coexist on one product. Do not report a closure conflict merely because one visible exterior component differs from a supplied hidden, internal, or functional closure.
+- Multiple carrying methods may coexist on one product. The way a product is presented in one image does not disprove a supplied additional handle or strap that may be detached, hidden, or out of frame.
 - Absence from the image is not a contradiction for a nonvisual supplied fact.
-- Report source/image disagreements in conflicts; do not silently choose source marketing copy over clear image evidence.
-- Report an attribute conflict whenever source text and visible evidence disagree, even after choosing the visually supported value.
+- A conflict requires clear, directly visible evidence that is mutually exclusive with a source claim about the same attribute and the same product component.
+- Do not report a conflict when the image is uncertain, the relevant detail is hidden, or the source and image refer to different components. Use unknown or not_visible when appropriate.
+- For a clear visible attribute conflict, select the visual value, set the attribute status to conflicting with image in sources, and report the source value, visual value, and reason in conflicts.
+- If a source claim changes the core product identity relative to clear visual evidence, report it as a product_type conflict rather than only as an attribute conflict.
 - Garment length is visible only when the hem and enough body context are shown; otherwise return null with status not_visible.
 - Use only applicable attributes and controlled values. composition and care may be free text.
-- Sources are source_structured, source_text, image, or image_ocr.
+- Every sources array may contain only these exact tokens: source_structured, source_text, image, image_ocr. Use image for visible evidence and never use a generic label for the complete row.
 - Status is accepted, unknown, not_visible, not_applicable, conflicting, or needs_review.
 - An unknown/not_visible value must be null and must not contain invented source evidence.
 - Use unknown, not not_visible, when a nonvisual fact such as care is absent from source text.
@@ -58,13 +62,14 @@ RULES:
 - Visible color or finish does not contradict supplied material composition; a coated or colored material may look different.
 - For genuine material claims, an explicit composition statement in the description outranks promotional material words in the product name. Flag the unsupported name claim and omit it from grounded content.
 - unsupported_claims is only for unsupported objective claims such as composition, care, dimensions, performance, or genuine precious materials. Do not flag subjective styling, occasion, versatility, or mood language.
+- Omit every item reported in unsupported_claims from enriched_description.
 - Do not create occasion, formality, aesthetic, mood, or trend fields.
-- Write one natural, standalone enriched_description in {info['language']} for {info['region']}. Combine useful visible details with trustworthy source facts so this single field is suitable for semantic search. Do not write a keyword list.
+- Write one natural, standalone enriched_description in {info['language']} for {info['region']}. Combine useful visible details with trustworthy source facts so this single field is suitable for semantic search. For a resolved visible conflict, use the selected visual value naturally and omit the contradicted source claim. Describe the product directly; never mention the image, source, description, visual analysis, evidence, model, review process, or disagreement. Do not write a keyword list.
 
 Return one JSON object only with:
 - product_type: value, confidence (0-1), status, sources
 - attributes: a JSON OBJECT keyed by exact allowed attribute names; each value is an object with value, confidence (0-1), status, sources. Never return attributes as an array.
-- conflicts: array of field, source_value, visual_value, reason
+- conflicts: JSON array of objects; every object has exactly field, source_value, visual_value, and reason
 - unsupported_claims: array of strings
 - content: enriched_description
 No markdown or additional keys."""

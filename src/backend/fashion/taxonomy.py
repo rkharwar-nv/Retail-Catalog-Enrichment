@@ -97,6 +97,20 @@ def _singular(value: str) -> str:
     return value
 
 
+def _normalize_product_type(value: Any) -> Any:
+    if value in PRODUCT_ATTRIBUTES:
+        return value
+    raw_value = str(value or "").strip().lower()
+    prefix_matches = [code for code in PRODUCT_ATTRIBUTES if raw_value.startswith(f"{code}.")]
+    if prefix_matches:
+        return max(prefix_matches, key=len)
+    leaf = raw_value.rsplit(".", 1)[-1]
+    matches = [code for code in PRODUCT_ATTRIBUTES if code.rsplit(".", 1)[-1] == leaf]
+    if not matches:
+        matches = [code for code in PRODUCT_ATTRIBUTES if _singular(code.rsplit(".", 1)[-1]) == _singular(leaf)]
+    return matches[0] if len(matches) == 1 else value
+
+
 def normalize_enrichment(value: dict[str, Any]) -> dict[str, Any]:
     """Apply safe structural normalization before strict validation."""
     if isinstance(value.get("content"), str):
@@ -105,17 +119,13 @@ def normalize_enrichment(value: dict[str, Any]) -> dict[str, Any]:
     product = value.get("product_type")
     if isinstance(product, dict):
         product["sources"] = _normalize_sources(product.get("sources"))
-    if isinstance(product, dict) and product.get("value") not in PRODUCT_ATTRIBUTES:
-        raw_value = str(product.get("value") or "").strip().lower()
-        prefix_matches = [code for code in PRODUCT_ATTRIBUTES if raw_value.startswith(f"{code}.")]
-        if prefix_matches:
-            product["value"] = max(prefix_matches, key=len)
-        leaf = raw_value.rsplit(".", 1)[-1]
-        matches = [code for code in PRODUCT_ATTRIBUTES if code.rsplit(".", 1)[-1] == leaf]
-        if not matches:
-            matches = [code for code in PRODUCT_ATTRIBUTES if _singular(code.rsplit(".", 1)[-1]) == _singular(leaf)]
-        if product.get("value") not in PRODUCT_ATTRIBUTES and len(matches) == 1:
-            product["value"] = matches[0]
+        product["value"] = _normalize_product_type(product.get("value"))
+
+    conflicts = value.get("conflicts")
+    if isinstance(conflicts, list):
+        for conflict in conflicts:
+            if isinstance(conflict, dict) and conflict.get("field") == "product_type":
+                conflict["visual_value"] = _normalize_product_type(conflict.get("visual_value"))
 
     attributes = value.get("attributes")
     if isinstance(attributes, dict):
@@ -170,6 +180,36 @@ def validate_enrichment(value: dict[str, Any]) -> list[str]:
             errors.append(f"{name}: invalid value")
         if name in FREE_TEXT_ATTRIBUTES and sources == ["image"] and attribute_value:
             errors.append(f"{name}: image-only evidence is not allowed")
+
+    conflicts = value.get("conflicts") or []
+    if not isinstance(conflicts, list):
+        errors.append("conflicts: must be an array")
+    else:
+        for conflict in conflicts:
+            if not isinstance(conflict, dict):
+                errors.append("conflicts: each item must be an object")
+                continue
+            field = conflict.get("field")
+            source_value = conflict.get("source_value")
+            visual_value = conflict.get("visual_value")
+            if not field or source_value in (None, "") or visual_value in (None, "") or not conflict.get("reason"):
+                errors.append("conflicts: field, source_value, visual_value, and reason are required")
+                continue
+            if field == "product_type":
+                if visual_value not in PRODUCT_ATTRIBUTES:
+                    errors.append("product_type conflict: invalid visual_value")
+                continue
+            if field in FREE_TEXT_ATTRIBUTES:
+                errors.append(f"{field} conflict: nonvisual facts cannot be visually corrected")
+                continue
+            attribute = attributes.get(field)
+            if not isinstance(attribute, dict):
+                errors.append(f"{field} conflict: matching attribute is required")
+                continue
+            if attribute.get("value") != visual_value:
+                errors.append(f"{field} conflict: attribute value must match visual_value")
+            if "image" not in (attribute.get("sources") or []):
+                errors.append(f"{field} conflict: visual correction requires image evidence")
     return errors
 
 

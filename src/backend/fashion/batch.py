@@ -15,6 +15,7 @@ from backend.fashion.service import enrich_product
 from backend.fashion.taxonomy import ATTRIBUTE_VERSION, TAXONOMY_VERSION
 
 logger = logging.getLogger("catalog_enrichment.fashion.batch")
+PUBLICATION_POLICY_VERSION = "fashion-publication/0.2"
 
 ELIMINATION_EXPLANATIONS = {
     "DUPLICATE_NAME_IMAGE": "Cause: ambiguous product identity. Multiple input rows use the same product name and image but do not provide stable source IDs. The workflow cannot determine whether they are duplicates, variants, or separate products, so none of the ambiguous rows is published.",
@@ -24,7 +25,6 @@ ELIMINATION_EXPLANATIONS = {
     "INVALID_PRICE": "Cause: invalid input data. The input price is missing, negative, or not numeric, so the record fails the publication contract.",
     "MODEL_ENRICHMENT_FAILED": "Cause: model-output validation failure. After three attempts, the model output still failed schema, taxonomy, value, applicability, or evidence validation. This does not by itself mean that the input text conflicts with the image.",
     "UNRESOLVED_PRODUCT_CLASSIFICATION": "Cause: input-text-versus-image conflict. The input text or structured data and visual analysis identify different product types. Publishing either classification without review would create an unverified catalog identity.",
-    "UNRESOLVED_EVIDENCE_CONFLICT": "Cause: input-text-versus-image conflict. The input text or structured data and visual analysis disagree on at least one product attribute. The disputed fact may affect filters or the enriched description, so the product is not published.",
     "ENRICHMENT_NOT_AVAILABLE": "Cause: incomplete enrichment. The workflow could not produce a complete, internally consistent, publication-ready record.",
 }
 
@@ -67,7 +67,7 @@ def _elimination_explanations(reasons: list[str], result: dict[str, Any] | None 
                     "value without review could make its taxonomy, filters, or enriched description incorrect."
                 )
     for reason in reasons:
-        if has_conflict_detail and reason in {"UNRESOLVED_PRODUCT_CLASSIFICATION", "UNRESOLVED_EVIDENCE_CONFLICT"}:
+        if has_conflict_detail and reason == "UNRESOLVED_PRODUCT_CLASSIFICATION":
             continue
         explanation = ELIMINATION_EXPLANATIONS.get(reason, reason)
         if explanation not in explanations:
@@ -111,6 +111,13 @@ def _review_rows(record_id: str, row_number: int, source: dict[str, Any], result
     conflict_details = {item.get("field"): item for item in conflicts if isinstance(item, dict)}
     product_type = result["product_type"]
     category, subcategory = _classification(product_type["value"])
+    classification_needs_review = "product_type" in conflict_details or _review_status(product_type) != "accepted"
+    if "product_type" in conflict_details:
+        classification_reason = "The source and visual evidence disagree on the product's identity, so no classification was selected automatically."
+    elif classification_needs_review:
+        classification_reason = "The product identity remains unresolved, so no classification was selected automatically."
+    else:
+        classification_reason = "The canonical classification passed taxonomy and evidence validation."
     rows = [{
         "record_id": record_id,
         "source_row": row_number,
@@ -120,29 +127,58 @@ def _review_rows(record_id: str, row_number: int, source: dict[str, Any], result
         "enriched_value": f"{category} / {subcategory}",
         "confidence": product_type.get("confidence", ""),
         "provenance": _sources(product_type),
-        "status": "review" if "product_type" in conflict_details else _review_status(product_type),
+        "status": "review" if classification_needs_review else "accepted",
         "attention_reason": (conflict_details.get("product_type") or {}).get("reason", ""),
+        "decision": "eliminated_for_identity_review" if classification_needs_review else "accepted",
+        "decision_reason": classification_reason,
     }]
     for field, value in (result.get("attributes") or {}).items():
         if not isinstance(value, dict):
             continue
+        conflict = conflict_details.get(field)
+        status = "corrected" if conflict else _review_status(value)
+        if conflict and classification_needs_review:
+            decision = "correction_not_published"
+            decision_reason = "The visual correction was recorded, but the product was not published because its identity remains unresolved."
+        elif conflict:
+            decision = "published_with_visual_correction"
+            decision_reason = "The attribute is directly visible, so the visual value replaced the conflicting source value in the published product and enriched description."
+        elif status == "accepted" and classification_needs_review:
+            decision = "value_not_published"
+            decision_reason = "The field value passed validation, but the product was not published because its identity remains unresolved."
+        elif status == "accepted":
+            decision = "accepted"
+            decision_reason = "The value passed taxonomy and evidence validation."
+        else:
+            decision = "omitted_not_available"
+            decision_reason = "No sufficiently supported value was available, so the attribute was omitted without blocking the product."
         rows.append({
             "record_id": record_id,
             "source_row": row_number,
             "product_name": source.get("name", ""),
             "field": field,
-            "original_value": (conflict_details.get(field) or {}).get("source_value", ""),
-            "enriched_value": (conflict_details.get(field) or {}).get("visual_value", value.get("value") if value.get("value") is not None else ""),
+            "original_value": (conflict or {}).get("source_value", ""),
+            "enriched_value": (conflict or {}).get("visual_value", value.get("value") if value.get("value") is not None else ""),
             "confidence": value.get("confidence", ""),
             "provenance": _sources(value),
-            "status": "review" if field in conflict_details else _review_status(value),
-            "attention_reason": (conflict_details.get(field) or {}).get("reason", ""),
+            "status": status,
+            "attention_reason": (conflict or {}).get("reason", ""),
+            "decision": decision,
+            "decision_reason": decision_reason,
         })
     for claim in result.get("unsupported_claims") or []:
+        claim_decision = "claim_not_published" if classification_needs_review else "claim_omitted"
+        claim_reason = (
+            "The claim was unsupported and the product was not published because its identity remains unresolved."
+            if classification_needs_review
+            else "The unsupported claim was excluded from grounded enrichment; the remaining product can still be published."
+        )
         rows.append({
             "record_id": record_id, "source_row": row_number, "product_name": source.get("name", ""),
             "field": "unsupported_claim", "original_value": claim, "enriched_value": "", "confidence": "",
             "provenance": "source_text", "status": "review", "attention_reason": "Claim was not supported by the available evidence.",
+            "decision": claim_decision,
+            "decision_reason": claim_reason,
         })
     return rows
 
@@ -159,9 +195,15 @@ def _catalog_record(record_id: str, row_number: int, source: dict[str, Any], res
     }
     if currency:
         record["currency"] = currency
-    conflicted_fields = {item.get("field") for item in result.get("conflicts") or [] if isinstance(item, dict)}
+    conflicts = {
+        item.get("field"): item
+        for item in result.get("conflicts") or []
+        if isinstance(item, dict) and item.get("field") != "product_type"
+    }
     for field, value in (result.get("attributes") or {}).items():
-        if field not in conflicted_fields and isinstance(value, dict) and value.get("status") == "accepted" and value.get("value") is not None:
+        if field in conflicts and conflicts[field].get("visual_value") is not None:
+            record[field] = conflicts[field]["visual_value"]
+        elif isinstance(value, dict) and value.get("status") == "accepted" and value.get("value") is not None:
             record[field] = value["value"]
     enriched_description = (result.get("content") or {}).get("enriched_description")
     if enriched_description:
@@ -204,6 +246,8 @@ def run_batch(
                 "field": "identity", "original_value": source.get("image", ""), "enriched_value": "", "confidence": "",
                 "provenance": "source_structured", "status": "review",
                 "attention_reason": "DUPLICATE_NAME_IMAGE: multiple rows share the same product name and image without a stable source identifier.",
+                "decision": "eliminated_for_identity_review",
+                "decision_reason": "No row was selected because the workflow cannot determine whether these are duplicates, variants, or separate products.",
             })
         elif not validate_only and audit.disposition != "FAIL" and audit.image_path and audit.content_type:
             try:
@@ -218,9 +262,10 @@ def run_batch(
                     "record_id": record_id, "source_row": row_number, "product_name": source.get("name", ""),
                     "field": "processing", "original_value": "", "enriched_value": "", "confidence": "",
                     "provenance": "", "status": "failed", "attention_reason": str(exc),
+                    "decision": "eliminated_for_processing_failure",
+                    "decision_reason": "No schema-valid enrichment was available after the bounded retry attempts.",
                 })
 
-        has_conflict = bool(result and result.get("conflicts"))
         product_type_conflict = bool(result and any(
             isinstance(item, dict) and item.get("field") == "product_type"
             for item in result.get("conflicts") or []
@@ -229,10 +274,10 @@ def run_batch(
 
         if result is not None:
             review_rows.extend(_review_rows(record_id, row_number, source, result))
-            if not validate_only and not has_conflict and not product_type_unresolved:
+            if not validate_only and not product_type_conflict and not product_type_unresolved:
                 catalog_records.append(_catalog_record(record_id, row_number, source, result, currency))
             elif not validate_only:
-                reasons = ["UNRESOLVED_PRODUCT_CLASSIFICATION" if product_type_conflict or product_type_unresolved else "UNRESOLVED_EVIDENCE_CONFLICT"]
+                reasons = ["UNRESOLVED_PRODUCT_CLASSIFICATION"]
                 eliminated_records.append({
                     **source, "record_id": record_id, "source_row": row_number,
                     "elimination_reasons": reasons,
@@ -260,6 +305,11 @@ def run_batch(
                     "enriched_value": "", "confidence": "", "provenance": "",
                     "status": "failed" if input_failed else "review",
                     "attention_reason": ", ".join(audit.issues),
+                    "decision": "eliminated_for_invalid_input" if input_failed else "eliminated_for_missing_visual_evidence",
+                    "decision_reason": (
+                        "The input row failed the required publication contract."
+                        if input_failed else "The image could not be analyzed, so multimodal enrichment was not possible."
+                    ),
                 })
         disposition_rows.append({"disposition": disposition})
 
@@ -271,7 +321,10 @@ def run_batch(
         with (output_dir / "eliminated_products.jsonl").open("w", encoding="utf-8") as handle:
             for record in eliminated_records:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    review_fields = ["record_id", "source_row", "product_name", "field", "original_value", "enriched_value", "confidence", "provenance", "status", "attention_reason"]
+    review_fields = [
+        "record_id", "source_row", "product_name", "field", "original_value", "enriched_value",
+        "confidence", "provenance", "status", "attention_reason", "decision", "decision_reason",
+    ]
     _write_csv(output_dir / "enrichment_review.csv", review_rows, review_fields)
 
     counts = {status: sum(row["disposition"] == status for row in disposition_rows) for status in ("PASS", "REVIEW", "FAIL", "SKIPPED")}
@@ -289,6 +342,7 @@ def run_batch(
         "images_dir": str(images_dir),
         "taxonomy_version": TAXONOMY_VERSION,
         "attribute_version": ATTRIBUTE_VERSION,
+        "publication_policy_version": PUBLICATION_POLICY_VERSION,
         "locale": locale,
         "currency": currency,
         "validate_only": validate_only,

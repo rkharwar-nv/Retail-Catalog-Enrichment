@@ -1,4 +1,4 @@
-nvidia/nvidia/nemotron-3-ultra# Fashion Catalog Enrichment
+# Fashion Catalog Enrichment
 
 ## Purpose
 
@@ -17,8 +17,8 @@ flowchart LR
     V -->|Missing or invalid input| R[enrichment_review.csv]
 
     O --> T[Enforce fashion taxonomy<br/>and evidence rules]
-    T -->|Accepted values| C[enriched_products.jsonl<br/>production catalog]
-    T -->|Failed or unresolved product| E[eliminated_products.jsonl]
+    T -->|Accepted and grounded corrections| C[enriched_products.jsonl<br/>production catalog]
+    T -->|Failed or unresolved identity| E[eliminated_products.jsonl]
     T -->|All fields| R
 
     R --> H[Catalog review<br/>focus on review and failed rows]
@@ -108,7 +108,7 @@ output/
 
 ### `enriched_products.jsonl`
 
-This is the production catalog to ingest. Each line is one flat JSON product that passed the publication gate. It preserves every original CSV field, normalizes `category` and `subcategory`, adds accepted nonconflicting fashion attributes, and adds one grounded `enriched_description`.
+This is the production catalog to ingest. Each line is one flat JSON product that passed the publication gate. It preserves every original CSV field, normalizes `category` and `subcategory`, adds accepted or visually corrected fashion attributes, and adds one grounded `enriched_description`.
 
 | Field | Meaning |
 |---|---|
@@ -122,7 +122,7 @@ This is the production catalog to ingest. Each line is one flat JSON product tha
 | `enriched_description` | Natural description grounded in the image and trustworthy supplied facts; use this for semantic embedding and optional display |
 | `currency` | Added only when `--currency` is supplied |
 
-Unknown or inapplicable attribute values are omitted. A product with any unresolved image/text conflict is eliminated rather than published because the generated description may also contain the disputed fact. Confidence, provenance, statuses, conflicts, and processing details are intentionally excluded from this file.
+Unknown or inapplicable attribute values are omitted. A clear conflict about a visible attribute does not eliminate the product: the visible value is published, the contradicted claim is excluded from `enriched_description`, and the complete decision is recorded in `enrichment_review.csv`. An unresolved product-identity conflict still eliminates the product. Confidence, provenance, statuses, conflicts, and processing details are intentionally excluded from this ingestion file.
 
 Example:
 
@@ -157,7 +157,7 @@ This is the quarantine file, not a production catalog. Each line preserves the o
 | `elimination_reasons` | Stable machine-readable reason codes |
 | `elimination_explanations` | Product-specific plain-language explanations, including the conflicting field and evidence reason when available |
 
-For an evidence conflict, the explanation states:
+For a blocking identity conflict, the explanation states:
 
 1. which field caused elimination;
 2. what the input text or structured row claimed;
@@ -175,7 +175,7 @@ Example:
 }
 ```
 
-The opening `Cause:` label makes the evidence path explicit. It will say whether the failure is an input-text-versus-image conflict, missing or unusable visual evidence, incomplete or invalid input data, ambiguous product identity, model-output validation failure, or incomplete enrichment. A model failure is never described as an evidence conflict unless the model returned a specific conflict between the two sources.
+The opening `Cause:` label makes the evidence path explicit. It will say whether the failure is an unresolved identity conflict, missing or unusable visual evidence, incomplete or invalid input data, ambiguous product identity, model-output validation failure, or incomplete enrichment. Attribute corrections belong in the review report, not the eliminated file.
 
 ### When a product is eliminated
 
@@ -186,10 +186,9 @@ The opening `Cause:` label makes the evidence path explicit. It will say whether
 | Image is missing or unreadable | Joint image/text enrichment cannot be completed |
 | Model output remains invalid after three attempts | No schema-valid, taxonomy-valid enrichment is available |
 | Source and image disagree on product classification | Publishing either classification would silently resolve an unresolved identity conflict |
-| Source and image disagree on an attribute | The enriched description may also contain the disputed fact, so removing only the structured field is insufficient |
 | Multiple rows share name and image without stable IDs | The workflow cannot safely determine whether they are duplicates, variants, or distinct products |
 
-Unknown optional attributes do **not** eliminate a product. Unsupported source claims do **not** eliminate a product when the model successfully excludes them from grounded content. A product is eliminated only when the remaining record cannot be treated as internally consistent and publication-ready.
+Unknown optional attributes, corrected visible attributes, and unsupported source claims do **not** eliminate a product when the workflow can produce internally consistent grounded content. A product is eliminated only when its identity is unresolved, required evidence or input is unavailable, or no valid enrichment can be produced.
 
 Machine-readable elimination codes include:
 
@@ -199,7 +198,6 @@ Machine-readable elimination codes include:
 - `IMAGE_UNREADABLE`
 - `MODEL_ENRICHMENT_FAILED`
 - `UNRESOLVED_PRODUCT_CLASSIFICATION`
-- `UNRESOLVED_EVIDENCE_CONFLICT`
 - `DUPLICATE_NAME_IMAGE`
 
 Fix or review these records, then rerun them before adding them to the production catalog.
@@ -220,13 +218,16 @@ This is the human-readable audit and attention report. It contains one row per r
 | `provenance` | Evidence source or sources supporting the value |
 | `status` | Whether the field is usable or needs attention |
 | `attention_reason` | Plain-language reason for a conflict, unsupported claim, missing input, or processing failure |
+| `decision` | Explicit publication choice, such as `accepted`, `published_with_visual_correction`, `claim_omitted`, or a value/correction not published because the product was eliminated |
+| `decision_reason` | Why that choice was safe, including which evidence was authoritative |
 
 Status definitions:
 
 | Status | Meaning | Production behavior |
 |---|---|---|
 | `accepted` | Usable value supported by permitted evidence | Included in the JSONL when it is an attribute or classification |
-| `review` | Conflict, unsupported claim, or material uncertainty requires attention | Disputed attribute is not promoted as trusted catalog data |
+| `corrected` | Source text clearly conflicts with a directly visible attribute | Visual value is included in the JSONL and the source claim is excluded from the enriched description |
+| `review` | Unsupported claim, identity conflict, or material uncertainty requires attention | Behavior is stated explicitly in `decision` |
 | `unknown` | Available evidence cannot establish the value; this is not an error | Omitted from the JSONL |
 | `failed` | The row could not produce valid enrichment | Product is written to `eliminated_products.jsonl`, not the production JSONL |
 
@@ -242,14 +243,14 @@ Provenance definitions:
 
 Accepted fields do not receive verbose generated reasoning. Their value, confidence, and provenance are the routine explanation. `attention_reason` is reserved for rows requiring action.
 
-Example:
+Example showing both the inconsistency and the publication decision:
 
 ```csv
-source_row,field,enriched_value,confidence,provenance,status,attention_reason
-22,primary_color,navy,0.96,image,accepted,
-22,composition,100% cotton,1.0,source_text,accepted,
-22,garment_length,maxi,0.88,image,review,Source says midi but the visible garment appears maxi.
-22,care,,0.0,,unknown,
+source_row,field,original_value,enriched_value,confidence,provenance,status,attention_reason,decision,decision_reason
+22,primary_color,,navy,0.96,image,accepted,,accepted,The value passed taxonomy and evidence validation.
+22,composition,,100% cotton,1.0,source_text,accepted,,accepted,The value passed taxonomy and evidence validation.
+22,toe_shape,closed_toe,open_toe,0.99,image,corrected,Source says closed-toe but the image clearly shows an open toe.,published_with_visual_correction,The attribute is directly visible so the visual value replaced the source value in the product and enriched description.
+22,care,,,0.0,,unknown,,omitted_not_available,No sufficiently supported value was available so the attribute was omitted without blocking the product.
 ```
 
 ## Validation and disposition rules
@@ -265,16 +266,16 @@ Validation occurs in three stages:
 | Valid input and enrichment with no material conflict | `PASS` | Accepted fields enter the JSONL |
 | Optional attribute cannot be established | May remain `PASS` | Field is `unknown` and omitted from JSONL |
 | Missing image | `REVIEW` | Product is eliminated because visual enrichment cannot run |
-| Attribute text/image disagreement | `REVIEW` | Entire product is eliminated because generated prose may contain the disputed fact |
+| Clear visible-attribute disagreement | `REVIEW` | Product is published with the visual correction; source value, visual value, inconsistency, decision, and rationale are recorded |
 | Product-classification disagreement | `REVIEW` | Entire product is eliminated pending resolution |
-| Unsupported objective claim | `REVIEW` | Claim is reported and excluded from grounded content |
+| Unsupported objective claim | `REVIEW` | Claim is reported and excluded from grounded content; the remaining product is published |
 | Duplicate name and image without stable source ID | `REVIEW` | All ambiguous rows are eliminated without model calls |
 | Missing name or description | `FAIL` | `input_validation` is marked failed and product is eliminated |
 | Invalid or negative price | `FAIL` | `input_validation` is marked failed and product is eliminated |
 | Image exists but is unreadable | `FAIL` | `input_validation` is marked failed and product is eliminated |
 | Model response remains invalid after three attempts | `FAIL` | `processing` is marked failed and product is eliminated |
 
-Model output is rejected when it contains an unknown classification, an attribute that does not apply to the classification, a value outside a controlled vocabulary, invalid provenance, an image-only composition or care claim, or no grounded enriched description. Harmless structural variations are normalized before validation; invalid results receive at most three total attempts.
+Model output is rejected when it contains an unknown classification, an attribute that does not apply to the classification, a value outside a controlled vocabulary, invalid provenance, an image-only composition or care claim, an incomplete conflict record, a visual correction that does not match the selected attribute, or no grounded enriched description. Harmless structural variations are normalized before validation; invalid results receive at most three total attempts.
 
 `PASS`, `REVIEW`, and `FAIL` apply to the complete product row in `batch_summary.json`. `accepted`, `review`, `unknown`, and `failed` apply to individual rows in `enrichment_review.csv`.
 
@@ -290,9 +291,15 @@ Records the input path and hash, image directory, taxonomy versions, locale, cur
 
 - Image evidence supports visible product form, color, pattern, neckline, sleeves, silhouette, and closure.
 - Source text supports supplied nonvisual facts such as composition, care, and measurements.
+- Source text also supports hidden or internal functional features that one exterior image cannot confirm or refute.
 - Structured fields support price, URL, identifiers, and other explicit source values.
 - Appearance alone cannot prove composition, care, waterproofing, sustainability, measurements, availability, or performance.
-- Text/image disagreements are reported rather than silently hidden.
+- A conflict requires clear, mutually exclusive evidence about the same attribute and product component.
+- Layered product components may coexist; seeing one exterior closure does not disprove a supplied hidden or internal closure.
+- A product may support multiple carrying methods; one photographed presentation does not disprove a supplied detachable or out-of-frame strap.
+- Lack of visibility or visual uncertainty is not a conflict.
+- Clear visible-attribute conflicts use the visual correction in structured data and grounded description while retaining the complete audit decision in the review report.
+- Product-identity conflicts are reported and eliminated rather than silently resolved.
 - Unknown is preferred to guessing.
 
 ## Current limitations

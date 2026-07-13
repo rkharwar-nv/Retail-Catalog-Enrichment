@@ -44,6 +44,37 @@ def test_taxonomy_rejects_value_when_status_is_unknown():
     assert "unknown value must be null" in validate_enrichment(result)[0]
 
 
+def test_taxonomy_requires_visual_conflict_to_match_selected_attribute():
+    result = _valid_result()
+    result["attributes"]["pattern"]["status"] = "conflicting"
+    result["conflicts"] = [{
+        "field": "pattern",
+        "source_value": "solid",
+        "visual_value": "stripe",
+        "reason": "The two evidence sources disagree.",
+    }]
+
+    assert "pattern conflict: attribute value must match visual_value" in validate_enrichment(result)
+
+
+def test_taxonomy_rejects_visual_correction_of_nonvisual_fact():
+    result = _valid_result()
+    result["attributes"]["composition"] = {
+        "value": "metal",
+        "confidence": 0.8,
+        "status": "conflicting",
+        "sources": ["source_text", "image"],
+    }
+    result["conflicts"] = [{
+        "field": "composition",
+        "source_value": "acetate",
+        "visual_value": "metal",
+        "reason": "Appearance differs from the supplied composition.",
+    }]
+
+    assert "composition conflict: nonvisual facts cannot be visually corrected" in validate_enrichment(result)
+
+
 def test_taxonomy_normalizes_unique_leaf_and_empty_status_value():
     result = _valid_result()
     result["product_type"]["value"] = "dresses"
@@ -98,6 +129,20 @@ def test_taxonomy_normalizes_singular_product_type_label():
     normalized = normalize_enrichment(result)
 
     assert normalized["product_type"]["value"] == "apparel.dresses"
+
+
+def test_taxonomy_normalizes_product_type_inside_conflict():
+    result = _valid_result()
+    result["conflicts"] = [{
+        "field": "product_type",
+        "source_value": "skirt",
+        "visual_value": "dresses",
+        "reason": "The sources identify different products.",
+    }]
+
+    normalized = normalize_enrichment(result)
+
+    assert normalized["conflicts"][0]["visual_value"] == "apparel.dresses"
 
 
 def test_source_category_conflict_is_added_for_different_product_type():
@@ -211,7 +256,7 @@ def test_enriched_output_is_flat_and_review_is_explanatory(mock_enrich, tmp_path
 @patch("backend.fashion.batch.enrich_product")
 def test_classification_conflict_is_eliminated(mock_enrich, tmp_path, sample_image_bytes):
     result = _valid_result()
-    result["conflicts"] = [{"field": "product_type", "source_value": "skirt", "visual_value": "dress", "reason": "Source and image disagree."}]
+    result["conflicts"] = [{"field": "product_type", "source_value": "apparel.skirts", "visual_value": "apparel.dresses", "reason": "Source and image disagree."}]
     mock_enrich.return_value = result
     images = tmp_path / "images"
     images.mkdir()
@@ -230,13 +275,18 @@ def test_classification_conflict_is_eliminated(mock_enrich, tmp_path, sample_ima
     eliminated = json.loads((tmp_path / "output" / "eliminated_products.jsonl").read_text())
     assert eliminated["elimination_reasons"] == ["UNRESOLVED_PRODUCT_CLASSIFICATION"]
     assert len(eliminated["elimination_explanations"]) == 1
-    assert "Input text/structured data says 'skirt'" in eliminated["elimination_explanations"][0]
-    assert "visual analysis says 'dress'" in eliminated["elimination_explanations"][0]
+    assert "Input text/structured data says 'apparel.skirts'" in eliminated["elimination_explanations"][0]
+    assert "visual analysis says 'apparel.dresses'" in eliminated["elimination_explanations"][0]
+    review = list(csv.DictReader((tmp_path / "output" / "enrichment_review.csv").open()))
+    pattern = next(row for row in review if row["field"] == "pattern")
+    assert pattern["decision"] == "value_not_published"
+    assert "identity remains unresolved" in pattern["decision_reason"]
 
 
 @patch("backend.fashion.batch.enrich_product")
-def test_attribute_conflict_eliminates_product(mock_enrich, tmp_path, sample_image_bytes):
+def test_attribute_conflict_publishes_visual_correction(mock_enrich, tmp_path, sample_image_bytes):
     result = _valid_result()
+    result["content"]["enriched_description"] = "A visually grounded floral dress."
     result["conflicts"] = [{"field": "pattern", "source_value": "solid", "visual_value": "floral", "reason": "Source and image disagree."}]
     mock_enrich.return_value = result
     images = tmp_path / "images"
@@ -248,17 +298,21 @@ def test_attribute_conflict_eliminates_product(mock_enrich, tmp_path, sample_ima
         writer.writeheader()
         writer.writerow({"category": "apparel", "subcategory": "dress", "name": "Product", "description": "Description", "price": "20", "image": "/images/dress.png"})
 
-    run_batch(csv_path, images, tmp_path / "output")
-    assert not (tmp_path / "output" / "enriched_products.jsonl").exists()
-    eliminated = json.loads((tmp_path / "output" / "eliminated_products.jsonl").read_text())
-    assert eliminated["elimination_reasons"] == ["UNRESOLVED_EVIDENCE_CONFLICT"]
-    assert len(eliminated["elimination_explanations"]) == 1
-    assert "Input text/structured data says 'solid'" in eliminated["elimination_explanations"][0]
-    assert "visual analysis says 'floral'" in eliminated["elimination_explanations"][0]
+    summary = run_batch(csv_path, images, tmp_path / "output")
+
+    assert summary["ready"] == 1
+    assert summary["eliminated"] == 0
+    assert not (tmp_path / "output" / "eliminated_products.jsonl").exists()
+    product = json.loads((tmp_path / "output" / "enriched_products.jsonl").read_text())
+    assert product["pattern"] == "floral"
+    assert product["enriched_description"] == "A visually grounded floral dress."
     review = list(csv.DictReader((tmp_path / "output" / "enrichment_review.csv").open()))
     pattern = next(row for row in review if row["field"] == "pattern")
     assert pattern["original_value"] == "solid"
     assert pattern["enriched_value"] == "floral"
+    assert pattern["status"] == "corrected"
+    assert pattern["decision"] == "published_with_visual_correction"
+    assert "replaced" in pattern["decision_reason"]
 
 
 def test_ambiguous_duplicates_are_eliminated_without_model_calls(tmp_path, sample_image_bytes):
