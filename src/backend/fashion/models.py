@@ -25,12 +25,31 @@ def enrich_with_omni(
     image_bytes: bytes,
     content_type: str,
     locale: str,
+    validation_errors: list[str] | None = None,
+    previous_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reason over source text and image together, returning canonical JSON."""
     config = get_config().get_vlm_config()
     info = LOCALE_CONFIG.get(locale, LOCALE_CONFIG["en-US"])
     client = OpenAI(base_url=config["url"], api_key=_api_key())
-    prompt = f"""Analyze the sold fashion product using the image and source row together.
+    retry_guidance = ""
+    if validation_errors:
+        retry_guidance = f"""
+
+PREVIOUS RESPONSE:
+{json.dumps(previous_result, ensure_ascii=False)}
+
+PREVIOUS RESPONSE VALIDATION ERRORS:
+{json.dumps(validation_errors, ensure_ascii=False)}
+
+Repair the previous response and return the complete corrected object. Resolve every validation error, preserve fields unrelated to those errors, and do not invent new facts. The previous response contains the multimodal findings; treat validation errors as output-contract corrections, not as new product evidence.
+"""
+    task = (
+        "Repair the previous multimodal fashion enrichment using the source row and validation feedback."
+        if previous_result is not None
+        else "Analyze the sold fashion product using the image and source row together."
+    )
+    prompt = f"""{task}
 
 SOURCE ROW:
 {json.dumps(source, ensure_ascii=False)}
@@ -54,6 +73,8 @@ RULES:
 - If a source claim changes the core product identity relative to clear visual evidence, report it as a product_type conflict rather than only as an attribute conflict.
 - Garment length is visible only when the hem and enough body context are shown; otherwise return null with status not_visible.
 - Use only applicable attributes and controlled values. composition and care may be free text.
+- Always return composition and care in attributes. Use accepted with source_text or source_structured when supplied, otherwise return null with status unknown. Never omit these evidence assessments.
+- enriched_description may mention composition or care only when the same fact is accepted in attributes from source_text or source_structured. Never introduce a material or care claim from appearance.
 - Every sources array may contain only these exact tokens: source_structured, source_text, image, image_ocr. Use image for visible evidence and never use a generic label for the complete row.
 - Status is accepted, unknown, not_visible, not_applicable, conflicting, or needs_review.
 - An unknown/not_visible value must be null and must not contain invented source evidence.
@@ -72,13 +93,16 @@ Return one JSON object only with:
 - conflicts: JSON array of objects; every object has exactly field, source_value, visual_value, and reason
 - unsupported_claims: array of strings
 - content: enriched_description
-No markdown or additional keys."""
+No markdown or additional keys.{retry_guidance}"""
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    if previous_result is None:
+        content.insert(0, {
+            "type": "image_url",
+            "image_url": {"url": f"data:{content_type};base64,{base64.b64encode(image_bytes).decode()}"},
+        })
     response = client.chat.completions.create(
         model=config["model"],
-        messages=[{"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{base64.b64encode(image_bytes).decode()}"}},
-            {"type": "text", "text": prompt},
-        ]}],
+        messages=[{"role": "user", "content": content}],
         temperature=0.0,
         top_p=1,
         max_tokens=8192,

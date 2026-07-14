@@ -17,6 +17,7 @@ def _valid_result():
         "attributes": {
             "pattern": {"value": "floral", "confidence": 0.9, "status": "accepted", "sources": ["image"]},
             "composition": {"value": "100% cotton", "confidence": 1.0, "status": "accepted", "sources": ["source_text"]},
+            "care": {"value": None, "confidence": 0.0, "status": "unknown", "sources": []},
         },
         "content": {"title": "Floral Dress", "enriched_description": "A floral dress."},
     }
@@ -36,6 +37,59 @@ def test_taxonomy_rejects_image_only_composition():
     result = _valid_result()
     result["attributes"]["composition"]["sources"] = ["image"]
     assert "image-only evidence" in validate_enrichment(result)[0]
+
+
+def test_taxonomy_requires_nonvisual_evidence_assessments():
+    result = _valid_result()
+    del result["attributes"]["composition"]
+
+    errors = validate_enrichment(result)
+
+    assert any(error.startswith("composition: evidence assessment is required") for error in errors)
+
+
+def test_taxonomy_rejects_structured_composition_without_structured_field():
+    result = _valid_result()
+    result["attributes"]["composition"]["sources"] = ["source_structured"]
+
+    errors = validate_enrichment(result, {"name": "Cotton Dress", "description": "Made from cotton."})
+
+    assert "composition: source_structured evidence is unavailable" in errors[0]
+
+
+def test_taxonomy_accepts_structured_composition_field():
+    result = _valid_result()
+    result["attributes"]["composition"]["sources"] = ["source_structured"]
+
+    assert validate_enrichment(result, {"material": "100% cotton"}) == []
+
+
+def test_taxonomy_relabels_verbatim_description_fact_as_source_text():
+    result = _valid_result()
+    result["attributes"]["composition"] = {
+        "value": "100% cotton",
+        "confidence": 1.0,
+        "status": "accepted",
+        "sources": ["source_structured"],
+    }
+
+    normalized = normalize_enrichment(result, {"description": "A dress made from 100% cotton."})
+
+    assert normalized["attributes"]["composition"]["sources"] == ["source_text"]
+
+
+def test_taxonomy_does_not_relabel_unverified_free_text_value():
+    result = _valid_result()
+    result["attributes"]["composition"] = {
+        "value": "silk",
+        "confidence": 0.8,
+        "status": "accepted",
+        "sources": ["source_structured"],
+    }
+
+    normalized = normalize_enrichment(result, {"description": "A formal dress."})
+
+    assert normalized["attributes"]["composition"]["sources"] == ["source_structured"]
 
 
 def test_taxonomy_rejects_value_when_status_is_unknown():
@@ -72,7 +126,10 @@ def test_taxonomy_rejects_visual_correction_of_nonvisual_fact():
         "reason": "Appearance differs from the supplied composition.",
     }]
 
-    assert "composition conflict: nonvisual facts cannot be visually corrected" in validate_enrichment(result)
+    assert any(
+        error.startswith("composition conflict: nonvisual facts cannot be visually corrected")
+        for error in validate_enrichment(result)
+    )
 
 
 def test_taxonomy_normalizes_unique_leaf_and_empty_status_value():
@@ -347,7 +404,49 @@ def test_enrichment_retries_once_after_invalid_schema(mock_omni):
     result = enrich_product({"name": "Dress"}, b"image", "image/jpeg")
 
     assert result["product_type"]["value"] == "apparel.dresses"
+    assert result["_retry_corrections"] == ["attributes: must be an object"]
     assert mock_omni.call_count == 2
+    assert mock_omni.call_args_list[0].kwargs["validation_errors"] is None
+    assert mock_omni.call_args_list[0].kwargs["previous_result"] is None
+    assert mock_omni.call_args_list[1].kwargs["validation_errors"] == ["attributes: must be an object"]
+    assert mock_omni.call_args_list[1].kwargs["previous_result"] is invalid
+
+
+@patch("backend.fashion.service.enrich_with_omni")
+def test_enrichment_recovers_from_nonvisual_material_correction(mock_omni):
+    invalid = _valid_result()
+    invalid["attributes"]["composition"] = {
+        "value": "metal",
+        "confidence": 0.8,
+        "status": "conflicting",
+        "sources": ["source_text", "image"],
+    }
+    invalid["conflicts"] = [{
+        "field": "composition",
+        "source_value": "acetate",
+        "visual_value": "metal",
+        "reason": "Appearance differs from the supplied composition.",
+    }]
+    corrected = _valid_result()
+    corrected["attributes"]["composition"] = {
+        "value": "acetate",
+        "confidence": 1.0,
+        "status": "accepted",
+        "sources": ["source_text"],
+    }
+    mock_omni.side_effect = [invalid, corrected]
+
+    result = enrich_product({"name": "Sunglasses", "description": "Acetate sunglasses."}, b"image", "image/jpeg")
+
+    error = (
+        "composition conflict: nonvisual facts cannot be visually corrected; remove this conflict, preserve the "
+        "supplied composition value with source_text evidence only, and remove the visual alternative from "
+        "enriched_description"
+    )
+    assert result["attributes"]["composition"]["value"] == "acetate"
+    assert result["_retry_corrections"] == [error]
+    assert mock_omni.call_args_list[1].kwargs["validation_errors"] == [error]
+    assert mock_omni.call_args_list[1].kwargs["previous_result"] is invalid
 
 
 @patch("backend.fashion.service.enrich_with_omni")
@@ -370,3 +469,31 @@ def test_enrichment_allows_a_final_bounded_retry(mock_omni):
 
     assert result["product_type"]["value"] == "apparel.dresses"
     assert mock_omni.call_count == 3
+
+
+@patch("backend.fashion.batch.enrich_product")
+def test_successful_model_retry_is_published_and_audited(mock_enrich, tmp_path, sample_image_bytes):
+    result = _valid_result()
+    result["_retry_corrections"] = ["composition conflict: nonvisual facts cannot be visually corrected"]
+    mock_enrich.return_value = result
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "dress.png").write_bytes(sample_image_bytes)
+    csv_path = tmp_path / "products.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["category", "subcategory", "name", "description", "price", "image"])
+        writer.writeheader()
+        writer.writerow({"category": "apparel", "subcategory": "dress", "name": "Product", "description": "Description", "price": "20", "image": "/images/dress.png"})
+
+    summary = run_batch(csv_path, images, tmp_path / "output")
+
+    assert summary["ready"] == 1
+    assert summary["eliminated"] == 0
+    assert summary["review"] == 1
+    product = json.loads((tmp_path / "output" / "enriched_products.jsonl").read_text())
+    assert "_retry_corrections" not in product
+    review = list(csv.DictReader((tmp_path / "output" / "enrichment_review.csv").open()))
+    processing = next(row for row in review if row["field"] == "processing")
+    assert processing["status"] == "review"
+    assert processing["decision"] == "published_after_model_retry"
+    assert "invalid model output was discarded" in processing["decision_reason"]

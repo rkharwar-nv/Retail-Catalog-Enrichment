@@ -55,6 +55,10 @@ ATTRIBUTE_VALUES = {
 }
 
 FREE_TEXT_ATTRIBUTES = {"composition", "care"}
+STRUCTURED_SOURCE_FIELDS = {
+    "composition": {"composition", "material", "materials", "fabric"},
+    "care": {"care", "care_instructions"},
+}
 STATUSES = {"accepted", "unknown", "not_visible", "not_applicable", "conflicting", "needs_review"}
 SOURCES = {"source_structured", "source_text", "image", "image_ocr"}
 SOURCE_ALIASES = {
@@ -111,7 +115,7 @@ def _normalize_product_type(value: Any) -> Any:
     return matches[0] if len(matches) == 1 else value
 
 
-def normalize_enrichment(value: dict[str, Any]) -> dict[str, Any]:
+def normalize_enrichment(value: dict[str, Any], source: dict[str, Any] | None = None) -> dict[str, Any]:
     """Apply safe structural normalization before strict validation."""
     if isinstance(value.get("content"), str):
         value["content"] = {"enriched_description": value["content"]}
@@ -129,16 +133,34 @@ def normalize_enrichment(value: dict[str, Any]) -> dict[str, Any]:
 
     attributes = value.get("attributes")
     if isinstance(attributes, dict):
-        for attribute in attributes.values():
+        source_text = " ".join(str((source or {}).get(field) or "") for field in ("name", "description")).casefold()
+        for name, attribute in attributes.items():
             if isinstance(attribute, dict):
                 if attribute.get("status") in {"unknown", "not_visible", "not_applicable"}:
                     attribute["value"] = None
                 sources = attribute.get("sources")
                 attribute["sources"] = _normalize_sources(sources)
+                structured_fields = STRUCTURED_SOURCE_FIELDS.get(name)
+                has_structured_evidence = bool(
+                    structured_fields and any(str((source or {}).get(field) or "").strip() for field in structured_fields)
+                )
+                attribute_value = str(attribute.get("value") or "").strip().casefold()
+                if (
+                    source is not None
+                    and structured_fields
+                    and "source_structured" in (attribute.get("sources") or [])
+                    and not has_structured_evidence
+                    and attribute_value
+                    and attribute_value in source_text
+                ):
+                    attribute["sources"] = list(dict.fromkeys(
+                        "source_text" if item == "source_structured" else item
+                        for item in attribute["sources"]
+                    ))
     return value
 
 
-def validate_enrichment(value: dict[str, Any]) -> list[str]:
+def validate_enrichment(value: dict[str, Any], source: dict[str, Any] | None = None) -> list[str]:
     """Return validation errors without mutating model output."""
     errors: list[str] = []
     content = value.get("content")
@@ -158,6 +180,11 @@ def validate_enrichment(value: dict[str, Any]) -> list[str]:
         attributes = {}
     if not isinstance(attributes, dict):
         return errors + ["attributes: must be an object"]
+    for required_field in sorted(FREE_TEXT_ATTRIBUTES - attributes.keys()):
+        errors.append(
+            f"{required_field}: evidence assessment is required; use an accepted supplied value or null with "
+            f"status unknown, and do not introduce {required_field} from appearance in enriched_description"
+        )
     for name, attribute in attributes.items():
         if name not in PRODUCT_ATTRIBUTES[product_type]:
             errors.append(f"{name}: not applicable to {product_type}")
@@ -180,6 +207,15 @@ def validate_enrichment(value: dict[str, Any]) -> list[str]:
             errors.append(f"{name}: invalid value")
         if name in FREE_TEXT_ATTRIBUTES and sources == ["image"] and attribute_value:
             errors.append(f"{name}: image-only evidence is not allowed")
+        structured_fields = STRUCTURED_SOURCE_FIELDS.get(name)
+        has_structured_evidence = source is None or bool(
+            structured_fields and any(str(source.get(field) or "").strip() for field in structured_fields)
+        )
+        if structured_fields and "source_structured" in sources and not has_structured_evidence:
+            errors.append(
+                f"{name}: source_structured evidence is unavailable; use source_text when the value comes from "
+                "the supplied name or description"
+            )
 
     conflicts = value.get("conflicts") or []
     if not isinstance(conflicts, list):
@@ -200,7 +236,11 @@ def validate_enrichment(value: dict[str, Any]) -> list[str]:
                     errors.append("product_type conflict: invalid visual_value")
                 continue
             if field in FREE_TEXT_ATTRIBUTES:
-                errors.append(f"{field} conflict: nonvisual facts cannot be visually corrected")
+                errors.append(
+                    f"{field} conflict: nonvisual facts cannot be visually corrected; remove this conflict, "
+                    f"preserve the supplied {field} value with source_text evidence only, and remove the visual "
+                    "alternative from enriched_description"
+                )
                 continue
             attribute = attributes.get(field)
             if not isinstance(attribute, dict):

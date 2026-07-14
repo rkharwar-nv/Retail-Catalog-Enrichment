@@ -15,7 +15,7 @@ from backend.fashion.service import enrich_product
 from backend.fashion.taxonomy import ATTRIBUTE_VERSION, TAXONOMY_VERSION
 
 logger = logging.getLogger("catalog_enrichment.fashion.batch")
-PUBLICATION_POLICY_VERSION = "fashion-publication/0.2"
+PUBLICATION_POLICY_VERSION = "fashion-publication/0.3"
 
 ELIMINATION_EXPLANATIONS = {
     "DUPLICATE_NAME_IMAGE": "Cause: ambiguous product identity. Multiple input rows use the same product name and image but do not provide stable source IDs. The workflow cannot determine whether they are duplicates, variants, or separate products, so none of the ambiguous rows is published.",
@@ -180,6 +180,16 @@ def _review_rows(record_id: str, row_number: int, source: dict[str, Any], result
             "decision": claim_decision,
             "decision_reason": claim_reason,
         })
+    retry_corrections = result.get("_retry_corrections") or []
+    if retry_corrections:
+        rows.append({
+            "record_id": record_id, "source_row": row_number, "product_name": source.get("name", ""),
+            "field": "processing", "original_value": "", "enriched_value": "", "confidence": "",
+            "provenance": "", "status": "review",
+            "attention_reason": "Earlier model output rejected: " + "; ".join(retry_corrections),
+            "decision": "published_after_model_retry",
+            "decision_reason": "The invalid model output was discarded. A later response passed schema, taxonomy, applicability, and evidence validation, so the product was published.",
+        })
     return rows
 
 
@@ -252,7 +262,7 @@ def run_batch(
         elif not validate_only and audit.disposition != "FAIL" and audit.image_path and audit.content_type:
             try:
                 result = enrich_product(source, audit.image_path.read_bytes(), audit.content_type, locale)
-                if result.get("conflicts") or result.get("unsupported_claims"):
+                if result.get("conflicts") or result.get("unsupported_claims") or result.get("_retry_corrections"):
                     disposition = "REVIEW"
             except Exception as exc:
                 logger.exception("Fashion enrichment failed for %s", record_id)

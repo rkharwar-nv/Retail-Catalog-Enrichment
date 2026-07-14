@@ -244,7 +244,7 @@ The opening `Cause:` label makes the evidence path explicit. It will say whether
 | Required name or description is missing | The product cannot be identified or described reliably |
 | Price is invalid or negative | The source record fails the required input contract |
 | Image is missing or unreadable | Joint image/text enrichment cannot be completed |
-| Model output remains invalid after three attempts | No schema-valid, taxonomy-valid enrichment is available |
+| Model output remains invalid after three corrective attempts | No schema-valid, taxonomy-valid enrichment is available |
 | Source and image disagree on product classification | Publishing either classification would silently resolve an unresolved identity conflict |
 | Multiple rows share name and image without stable IDs | The workflow cannot safely determine whether they are duplicates, variants, or distinct products |
 
@@ -278,7 +278,7 @@ This is the human-readable audit and attention report. It contains one row per r
 | `provenance` | Evidence source or sources supporting the value |
 | `status` | Whether the field is usable or needs attention |
 | `attention_reason` | Plain-language reason for a conflict, unsupported claim, missing input, or processing failure |
-| `decision` | Explicit publication choice, such as `accepted`, `published_with_visual_correction`, `claim_omitted`, or a value/correction not published because the product was eliminated |
+| `decision` | Explicit publication choice, such as `accepted`, `published_with_visual_correction`, `published_after_model_retry`, `published_after_recovery_run`, `claim_omitted`, or a value/correction not published because the product was eliminated |
 | `decision_reason` | Why that choice was safe, including which evidence was authoritative |
 
 Status definitions:
@@ -304,7 +304,7 @@ These fictional, self-contained examples are adapted from validation behaviors; 
 | Footwear described as ballet flats but visibly constructed as stiletto heels | Supplied identity and visible product type disagree | `review` | `eliminated_for_identity_review` | The complete product is withheld because its identity is contradictory |
 | The same identity-blocked footwear | `heel_type: low-profile → stiletto`, confidence `0.99`, provenance `image` | `corrected` | `correction_not_published` | The visual finding is recorded, but no field is published because the complete product remains blocked |
 | Skirt whose referenced image file is absent | Image cannot be loaded | `review` | `eliminated_for_missing_visual_evidence` | Multimodal enrichment cannot run, so the product is withheld |
-| Sunglasses whose model output tries to replace supplied composition using appearance | Nonvisual composition rule remains invalid after three attempts | `failed` | `eliminated_for_processing_failure` | No schema- and evidence-valid result is available |
+| Sunglasses whose first model response tries to replace supplied composition using appearance | Invalid response is rejected; a corrected retry preserves the supplied composition | `review` | `published_after_model_retry` | The valid later response is published and the rejected attempt remains visible in review |
 
 The important distinction is that `review` does not automatically mean elimination. An unsupported claim may be omitted while the product is published; an unresolved identity conflict eliminates the complete product. Likewise, a `corrected` field is published only when the product itself passes the publication gate.
 
@@ -340,13 +340,15 @@ source_row,field,original_value,enriched_value,confidence,provenance,status,atte
 | `published_with_visual_correction` | Supplied text says `closed_toe`; clear visual evidence says `open_toe` | Visual value and corrected description are published; inconsistency and rationale remain in review | `enriched_products.jsonl` and `enrichment_review.csv` |
 | `omitted_not_available` | Care instructions are absent and cannot be established visually | Optional field is omitted; product remains publishable | `enrichment_review.csv` |
 | `claim_omitted` | Supplied text makes an objective claim that available evidence cannot support | Claim is excluded from grounded enrichment; remaining product is published | `enriched_products.jsonl` and `enrichment_review.csv` |
+| `published_after_model_retry` | An earlier model response violates an evidence or schema rule, and a later response corrects it | Invalid response is discarded; the valid product is published with the earlier error recorded for audit | `enriched_products.jsonl` and `enrichment_review.csv` |
+| `published_after_recovery_run` | The initial batch exhausts its bounded attempts, but an independently rerun processing failure later passes every publication rule | Valid recovery result is published; the original processing error and final recovery decision remain in review | `enriched_products.jsonl` and `enrichment_review.csv` |
 | `eliminated_for_identity_review` | Supplied identity says flats while clear visual evidence identifies heels, or duplicate rows lack stable IDs | Entire product is withheld because its identity is unresolved | `eliminated_products.jsonl` and `enrichment_review.csv` |
 | `correction_not_published` | A visual attribute correction exists, but the same product has a blocking identity conflict | Correction is recorded for review but is not published | `eliminated_products.jsonl` and `enrichment_review.csv` |
 | `value_not_published` | An individual field is valid, but the product has a blocking identity conflict | Valid field is recorded but is not published independently | `eliminated_products.jsonl` and `enrichment_review.csv` |
 | `claim_not_published` | An unsupported claim belongs to a product already blocked by an identity conflict | Claim and product both remain outside the production catalog | `eliminated_products.jsonl` and `enrichment_review.csv` |
 | `eliminated_for_missing_visual_evidence` | Referenced image is missing or unusable | Product is withheld because multimodal enrichment cannot run | `eliminated_products.jsonl` and `enrichment_review.csv` |
 | `eliminated_for_invalid_input` | Required name/description is missing or price is invalid | Product fails the input contract and is withheld | `eliminated_products.jsonl` and `enrichment_review.csv` |
-| `eliminated_for_processing_failure` | Model output remains schema- or taxonomy-invalid after three attempts | Product is withheld with the exact final validation detail | `eliminated_products.jsonl` and `enrichment_review.csv` |
+| `eliminated_for_processing_failure` | Model output remains schema- or taxonomy-invalid after three corrective attempts | Product is withheld with the exact final validation detail | `eliminated_products.jsonl` and `enrichment_review.csv` |
 
 Example of a published correction:
 
@@ -375,7 +377,7 @@ Validation occurs in three stages:
 
 1. Input validation checks required text, price, image presence, and image readability.
 2. Omni analyzes the complete CSV row and image together.
-3. Deterministic validation enforces allowed classifications, applicable attributes, controlled values, evidence sources, and the required grounded description.
+3. Deterministic validation enforces allowed classifications, applicable attributes, controlled values, evidence sources, and the required grounded description. When a response is invalid, the exact errors and prior multimodal result are supplied to a text-only repair attempt. The image is not resent during repair, so valid visual findings can be preserved without encouraging another visual inference about nonvisual facts.
 
 | Condition | Batch disposition | Review status and behavior |
 |---|---|---|
@@ -389,9 +391,11 @@ Validation occurs in three stages:
 | Missing name or description | `FAIL` | `input_validation` is marked failed and product is eliminated |
 | Invalid or negative price | `FAIL` | `input_validation` is marked failed and product is eliminated |
 | Image exists but is unreadable | `FAIL` | `input_validation` is marked failed and product is eliminated |
-| Model response remains invalid after three attempts | `FAIL` | `processing` is marked failed and product is eliminated |
+| An invalid model response is corrected by a later retry | `REVIEW` | Product is published; `processing` records `published_after_model_retry` and the rejected validation error |
+| A processing-only failure passes an independently executed recovery run | `REVIEW` | Product is published; the initial error is retained with `published_after_recovery_run` |
+| Model response remains invalid after three corrective attempts | `FAIL` | `processing` is marked failed and product is eliminated |
 
-Model output is rejected when it contains an unknown classification, an attribute that does not apply to the classification, a value outside a controlled vocabulary, invalid provenance, an image-only composition or care claim, an incomplete conflict record, a visual correction that does not match the selected attribute, or no grounded enriched description. Harmless structural variations are normalized before validation; invalid results receive at most three total attempts.
+Model output is rejected when it contains an unknown classification, an attribute that does not apply to the classification, a value outside a controlled vocabulary, invalid provenance, an image-only composition or care claim, an incomplete conflict record, a visual correction that does not match the selected attribute, or no grounded enriched description. Every response must explicitly assess `composition` and `care`: use a supplied value with text or structured provenance, or mark the field unknown. This prevents the description from silently introducing material or care claims from appearance. Harmless structural variations are normalized before validation; invalid results receive at most three total attempts.
 
 `PASS`, `REVIEW`, and `FAIL` apply to the complete product row in `batch_summary.json`. `accepted`, `review`, `unknown`, and `failed` apply to individual rows in `enrichment_review.csv`.
 
@@ -410,6 +414,7 @@ Records the input path and hash, image directory, taxonomy versions, locale, cur
 - Source text also supports hidden or internal functional features that one exterior image cannot confirm or refute.
 - Structured fields support price, URL, identifiers, and other explicit source values.
 - Appearance alone cannot prove composition, care, waterproofing, sustainability, measurements, availability, or performance.
+- Composition and care are always assessed explicitly. When absent from supplied data they are marked unknown and omitted from the production JSONL.
 - A conflict requires clear, mutually exclusive evidence about the same attribute and product component.
 - Layered product components may coexist; seeing one exterior closure does not disprove a supplied hidden or internal closure.
 - A product may support multiple carrying methods; one photographed presentation does not disprove a supplied detachable or out-of-frame strap.
