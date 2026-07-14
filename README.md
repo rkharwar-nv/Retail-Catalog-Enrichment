@@ -282,7 +282,7 @@ The batch produces two primary files:
 
 `batch_summary.json` reports the run counts, while `run_manifest.json` records the input and taxonomy versions for reproducibility.
 
-See **[Fashion Enrichment Guide](docs/FASHION_ENRICHMENT.md)** for the complete input contract, output field definitions, review statuses, provenance meanings, Elasticsearch guidance, examples, and current limitations.
+See **[Fashion Enrichment Guide](docs/FASHION_ENRICHMENT.md)** for the complete input contract, output field definitions, review decisions, provenance meanings, publication rules, examples, and current limitations.
 
 ### Image Input Guidance
 

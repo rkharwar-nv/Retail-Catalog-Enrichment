@@ -253,6 +253,45 @@ source_row,field,original_value,enriched_value,confidence,provenance,status,atte
 22,care,,,0.0,,unknown,,omitted_not_available,No sufficiently supported value was available so the attribute was omitted without blocking the product.
 ```
 
+### Decision reference
+
+`status` describes the field finding. `decision` states what the workflow did with that finding. The decision is the clearest column for determining whether a value or product was published.
+
+| Decision | Example situation | Outcome | Relevant output |
+|---|---|---|---|
+| `accepted` | A visible color is supported by the image and passes the controlled vocabulary | Value is published | `enriched_products.jsonl`; evidence row in `enrichment_review.csv` |
+| `published_with_visual_correction` | Supplied text says `closed_toe`; clear visual evidence says `open_toe` | Visual value and corrected description are published; inconsistency and rationale remain in review | `enriched_products.jsonl` and `enrichment_review.csv` |
+| `omitted_not_available` | Care instructions are absent and cannot be established visually | Optional field is omitted; product remains publishable | `enrichment_review.csv` |
+| `claim_omitted` | Supplied text makes an objective claim that available evidence cannot support | Claim is excluded from grounded enrichment; remaining product is published | `enriched_products.jsonl` and `enrichment_review.csv` |
+| `eliminated_for_identity_review` | Supplied identity says flats while clear visual evidence identifies heels, or duplicate rows lack stable IDs | Entire product is withheld because its identity is unresolved | `eliminated_products.jsonl` and `enrichment_review.csv` |
+| `correction_not_published` | A visual attribute correction exists, but the same product has a blocking identity conflict | Correction is recorded for review but is not published | `eliminated_products.jsonl` and `enrichment_review.csv` |
+| `value_not_published` | An individual field is valid, but the product has a blocking identity conflict | Valid field is recorded but is not published independently | `eliminated_products.jsonl` and `enrichment_review.csv` |
+| `claim_not_published` | An unsupported claim belongs to a product already blocked by an identity conflict | Claim and product both remain outside the production catalog | `eliminated_products.jsonl` and `enrichment_review.csv` |
+| `eliminated_for_missing_visual_evidence` | Referenced image is missing or unusable | Product is withheld because multimodal enrichment cannot run | `eliminated_products.jsonl` and `enrichment_review.csv` |
+| `eliminated_for_invalid_input` | Required name/description is missing or price is invalid | Product fails the input contract and is withheld | `eliminated_products.jsonl` and `enrichment_review.csv` |
+| `eliminated_for_processing_failure` | Model output remains schema- or taxonomy-invalid after three attempts | Product is withheld with the exact final validation detail | `eliminated_products.jsonl` and `enrichment_review.csv` |
+
+Example of a published correction:
+
+```text
+field: toe_shape
+original_value: closed_toe
+enriched_value: open_toe
+status: corrected
+decision: published_with_visual_correction
+attention_reason: Supplied text says closed-toe while the product is visibly open-toe.
+decision_reason: The directly visible value replaced the conflicting source value in the product and enriched description.
+```
+
+Example of an identity-blocked product with otherwise valid field findings:
+
+```text
+category/subcategory decision: eliminated_for_identity_review
+heel_type decision: correction_not_published
+primary_color decision: value_not_published
+result: the complete product is written only to eliminated_products.jsonl
+```
+
 ## Validation and disposition rules
 
 Validation occurs in three stages:
