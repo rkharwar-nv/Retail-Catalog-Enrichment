@@ -544,6 +544,23 @@ def _has_degenerate_repetition(text: str) -> bool:
         counts[normalized] = counts.get(normalized, 0) + 1
     return bool(counts and max(counts.values()) >= 10)
 
+
+def _collect_stream_text(completion: Iterable[Any]) -> str:
+    """Collect normal streamed content, falling back to reasoning content."""
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    for chunk in completion:
+        delta = chunk.choices[0].delta
+        if not delta:
+            continue
+        content = getattr(delta, "content", None)
+        reasoning_content = getattr(delta, "reasoning_content", None)
+        if isinstance(content, str) and content:
+            content_parts.append(content)
+        if isinstance(reasoning_content, str) and reasoning_content:
+            reasoning_parts.append(reasoning_content)
+    return "".join(content_parts) or "".join(reasoning_parts)
+
 def _call_nemotron_filter_user_data(
     vlm_output: Dict[str, Any],
     product_data: Dict[str, Any]
@@ -1210,7 +1227,7 @@ def _call_vlm(image_bytes: bytes, content_type: str, locale: str = "en-US") -> D
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
 
-    text = "".join(chunk.choices[0].delta.content for chunk in completion if chunk.choices[0].delta and chunk.choices[0].delta.content)
+    text = _collect_stream_text(completion)
     logger.info("VLM free-text response received: %d chars", len(text))
 
     return _call_nemotron_structure_vlm(text.strip(), locale)
@@ -1321,11 +1338,7 @@ def extract_rich_product_json(image_bytes: bytes, content_type: str, locale: str
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
 
-    text = "".join(
-        chunk.choices[0].delta.content
-        for chunk in completion
-        if chunk.choices[0].delta and chunk.choices[0].delta.content
-    )
+    text = _collect_stream_text(completion)
     logger.info("VLM rich product JSON response received: %d chars", len(text))
 
     parsed = parse_llm_json(text, extract_braces=True, strip_comments=True)

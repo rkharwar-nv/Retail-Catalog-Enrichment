@@ -73,6 +73,33 @@ class TestCallVLM:
     @patch('backend.vlm._call_nemotron_structure_vlm')
     @patch('backend.vlm.OpenAI')
     @patch('backend.vlm.get_config')
+    def test_call_vlm_uses_reasoning_content_when_content_is_empty(
+        self, mock_get_config, mock_openai_class, mock_structure, sample_image_bytes, sample_vlm_response, mock_env_vars
+    ):
+        mock_config = Mock()
+        mock_config.get_vlm_config.return_value = {'url': 'http://test:8000/v1', 'model': 'test-model'}
+        mock_get_config.return_value = mock_config
+
+        mock_client = Mock()
+        mock_openai_class.return_value = mock_client
+        mock_delta = Mock()
+        mock_delta.content = ""
+        mock_delta.reasoning_content = "A visually grounded product description."
+        mock_choice = Mock()
+        mock_choice.delta = mock_delta
+        mock_chunk = Mock()
+        mock_chunk.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = [mock_chunk]
+        mock_structure.return_value = sample_vlm_response
+
+        result = _call_vlm(sample_image_bytes, "image/png", "en-US")
+
+        mock_structure.assert_called_once_with("A visually grounded product description.", "en-US")
+        assert result == sample_vlm_response
+
+    @patch('backend.vlm._call_nemotron_structure_vlm')
+    @patch('backend.vlm.OpenAI')
+    @patch('backend.vlm.get_config')
     def test_call_vlm_uses_short_prompt(self, mock_get_config, mock_openai_class, mock_structure, sample_image_bytes, sample_vlm_response, mock_env_vars):
         """Test that the VLM prompt is short (not the old ~35 line prompt)."""
         mock_config = Mock()
@@ -434,6 +461,30 @@ class TestExtractRichProductJson:
 
         assert result["parse_status"] == "unstructured"
         assert result["raw_response"] == raw_response
+
+    @patch('backend.vlm.OpenAI')
+    @patch('backend.vlm.get_config')
+    def test_extract_rich_product_json_uses_reasoning_content_when_content_is_empty(
+        self, mock_get_config, mock_openai_class, sample_image_bytes, mock_env_vars
+    ):
+        mock_config = Mock()
+        mock_config.get_vlm_config.return_value = {'url': 'http://test:8000/v1', 'model': 'test-vlm-model'}
+        mock_get_config.return_value = mock_config
+
+        mock_client = Mock()
+        mock_openai_class.return_value = mock_client
+        mock_delta = Mock()
+        mock_delta.content = ""
+        mock_delta.reasoning_content = json.dumps({"visible_product": True})
+        mock_choice = Mock()
+        mock_choice.delta = mock_delta
+        mock_chunk = Mock()
+        mock_chunk.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = [mock_chunk]
+
+        result = extract_rich_product_json(sample_image_bytes, "image/png", "en-US")
+
+        assert result == {"visible_product": True}
 
     def test_extract_rich_product_json_raises_without_api_key(self, sample_image_bytes, monkeypatch):
         monkeypatch.delenv("NGC_API_KEY", raising=False)
