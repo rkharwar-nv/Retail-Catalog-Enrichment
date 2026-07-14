@@ -26,6 +26,54 @@ flowchart LR
 
 Omni reasons over the complete source row and image in one request. Deterministic validation then controls which values enter the production catalog. Confidence, provenance, unknown values, conflicts, and failures are written to the separate review report.
 
+## How a product is represented
+
+The workflow keeps four concerns separate so the production record stays useful without becoming a large, repetitive ontology.
+
+### Product taxonomy — what is it?
+
+One canonical category and subcategory identify the product:
+
+```text
+category: apparel
+subcategory: dresses
+```
+
+This supports navigation, exact filtering, catalog consistency, and later channel export.
+
+### Visual attribute vocabulary — what does it look like?
+
+Only observable attributes that apply to the product type are added:
+
+```text
+primary_color: navy
+pattern: floral
+neckline: v_neck
+sleeve_length: long
+garment_length: midi
+silhouette: a_line
+```
+
+A dress can have a neckline and sleeve length; a handbag cannot. Applicability rules prevent attributes from being attached to the wrong product type.
+
+### Supplied product facts — what does the merchant know?
+
+Facts that generally cannot be proven from appearance remain grounded in supplied data:
+
+```text
+composition: 100% cotton
+care: machine wash cold
+price: 149.99
+```
+
+### Grounded search description — how can it be found?
+
+The workflow combines trustworthy supplied facts with visible characteristics into one natural description:
+
+> A navy floral midi dress with a V-neckline, long sleeves, and an A-line silhouette, made from 100% cotton.
+
+The taxonomy identifies the product, the visual vocabulary describes observable form, supplied facts preserve nonvisual specifications, and `enriched_description` supports semantic search.
+
 ## Inputs
 
 Required CSV columns:
@@ -230,6 +278,23 @@ Status definitions:
 | `review` | Unsupported claim, identity conflict, or material uncertainty requires attention | Behavior is stated explicitly in `decision` |
 | `unknown` | Available evidence cannot establish the value; this is not an error | Omitted from the JSONL |
 | `failed` | The row could not produce valid enrichment | Product is written to `eliminated_products.jsonl`, not the production JSONL |
+
+### Status examples from the authoritative run
+
+These examples are taken from the completed 218-product run. They are not hypothetical. `status` describes the field finding; `decision` records what the workflow did with it.
+
+| Source row and product | Field result | Status | Decision | Meaning |
+|---|---|---|---|---|
+| Row 2, Southwest Bracelet | `metal_color=gold_tone`, confidence `0.97`, provenance `image` | `accepted` | `accepted` | The supported value was published |
+| Row 23, Kiss Me High Heel Sandals | `closed_toe → open_toe`, confidence `0.99`, provenance `image+source_text` | `corrected` | `published_with_visual_correction` | The product and corrected description were published using the visible open-toe value |
+| Row 2, Southwest Bracelet | `care` has no supported value | `unknown` | `omitted_not_available` | Care was omitted without blocking the bracelet |
+| Row 4, Isis Bracelet | Unsupported claim: `high-quality crystals` | `review` | `claim_omitted` | The claim was excluded, but the remaining bracelet was published |
+| Row 28, Opulent Velvet Ballet Flats | Classification changes from supplied shoes/flats to visible heels | `review` | `eliminated_for_identity_review` | The complete product was withheld because its identity is contradictory |
+| Row 28, Opulent Velvet Ballet Flats | `low-profile → stiletto`, confidence `0.99`, provenance `image` | `corrected` | `correction_not_published` | The visual finding was recorded, but no field was published because the product identity remained blocked |
+| Row 89, Kaleidoscope Floral Maxi Skirt | Referenced image was not found | `review` | `eliminated_for_missing_visual_evidence` | Multimodal enrichment could not run, so the product was withheld |
+| Row 43, Aria Aviator Sunglasses | Model repeatedly attempted an unsupported visual composition correction | `failed` | `eliminated_for_processing_failure` | No valid result was available after three attempts |
+
+The important distinction is that `review` does not automatically mean elimination. An unsupported claim may be omitted while the product is published; an unresolved identity conflict eliminates the complete product. Likewise, a `corrected` field is published only when the product itself passes the publication gate.
 
 Provenance definitions:
 
