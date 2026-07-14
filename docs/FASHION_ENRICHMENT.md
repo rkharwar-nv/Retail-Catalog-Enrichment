@@ -85,16 +85,16 @@ Required CSV columns:
 | `image` | Image path whose basename exists under `--images-dir` |
 | `price` | Non-negative numeric price |
 
-The current sample also provides `category`, `subcategory`, and `url`. All source columns are preserved. Version 0.1 supports one local image per row and does not download remote images.
+Optional columns may include `sku`, `category`, `subcategory`, `url`, and any customer-specific fields. All source columns are preserved. Version 0.1 supports one local image per row and does not download remote images.
 
 ### Example input dataset
 
-The customer dataset is not distributed with this repository. A compatible input CSV has this shape:
+The examples below are fictional and self-contained. A compatible input CSV has this shape:
 
 ```csv
-category,subcategory,name,description,url,price,image
-apparel,dress,Navy Wrap Dress,"A navy wrap dress made from 100% cotton with machine-wash care instructions.",https://shop.example/products/navy-wrap-dress,149.99,/images/navy_wrap_dress.jpg
-footwear,shoes,Tan Lace-Up Boots,"Tan ankle boots with a leather upper and lace fastening.",https://shop.example/products/tan-boots,179.99,/images/tan_lace_up_boots.jpg
+sku,category,subcategory,name,description,url,price,image
+SKU-DRESS-001,apparel,dress,Navy Wrap Dress,"A navy wrap dress made from 100% cotton with machine-wash care instructions.",https://shop.example/products/navy-wrap-dress,149.99,/images/navy_wrap_dress.jpg
+SKU-BOOT-001,footwear,shoes,Tan Lace-Up Boots,"Tan ankle boots with a leather upper and lace fastening.",https://shop.example/products/tan-boots,179.99,/images/tan_lace_up_boots.jpg
 ```
 
 The matching image directory is supplied separately:
@@ -176,21 +176,25 @@ Example:
 
 ```json
 {
-  "record_id": "generated:2b682a3db8471740",
-  "source_row": 22,
+  "record_id": "SKU-DRESS-001",
+  "source_row": 2,
   "category": "apparel",
   "subcategory": "dresses",
-  "name": "Classic Wrap Dress",
-  "description": "Original supplier description...",
+  "name": "Navy Wrap Dress",
+  "description": "A navy wrap dress made from 100% cotton with machine-wash care instructions.",
+  "url": "https://shop.example/products/navy-wrap-dress",
   "price": "149.99",
-  "image": "/images/wrap-dress.jpg",
+  "image": "/images/navy_wrap_dress.jpg",
   "primary_color": "navy",
   "neckline": "v_neck",
   "garment_length": "midi",
   "composition": "100% cotton",
-  "enriched_description": "A navy midi dress with a V-neckline and wrap-style front. The supplied information identifies the fabric as 100% cotton."
+  "care": "machine_wash",
+  "enriched_description": "A navy cotton midi dress with a V-neckline and wrap-style front. Supplied care instructions specify machine washing."
 }
 ```
+
+This is the enriched form of the fictional first CSV row shown under **Example input dataset**. The example uses a supplied SKU as `record_id`; if no stable ID column is present, the workflow generates a deterministic fallback ID.
 
 The generated fallback ID is stable when the CSV is reordered, but a supplied `product_id`, `sku`, or `id` remains strongly preferred. If multiple rows share the same name and image without a stable supplied ID, all members of that ambiguous group are eliminated rather than assigned arbitrary identities.
 
@@ -216,6 +220,14 @@ Example:
 
 ```json
 {
+  "record_id": "SKU-SHOE-001",
+  "source_row": 2,
+  "category": "footwear",
+  "subcategory": "flats",
+  "name": "Velvet Ballet Flats",
+  "description": "Closed-toe velvet ballet flats with a low-profile sole.",
+  "price": "89.99",
+  "image": "/images/velvet_ballet_flats.jpg",
   "elimination_reasons": ["UNRESOLVED_PRODUCT_CLASSIFICATION"],
   "elimination_explanations": [
     "Cause: input-text-versus-image conflict for 'category/subcategory'. Input text/structured data says 'ballet flats'; visual analysis says 'high-heeled pumps'. Evidence detail: the source describes a low-profile flat, while the image shows a pointed stiletto heel. The product was not published because choosing either value without review could make its taxonomy, filters, or enriched description incorrect."
@@ -279,20 +291,20 @@ Status definitions:
 | `unknown` | Available evidence cannot establish the value; this is not an error | Omitted from the JSONL |
 | `failed` | The row could not produce valid enrichment | Product is written to `eliminated_products.jsonl`, not the production JSONL |
 
-### Status examples from the authoritative run
+### Generic status examples
 
-These examples are taken from the completed 218-product run. They are not hypothetical. `status` describes the field finding; `decision` records what the workflow did with it.
+These fictional, self-contained examples are adapted from validation behaviors; no external catalog or test output is required to understand them. `status` describes the field finding; `decision` records what the workflow did with it.
 
-| Source row and product | Field result | Status | Decision | Meaning |
+| Example product | Field result | Status | Decision | Meaning |
 |---|---|---|---|---|
-| Row 2, Southwest Bracelet | `metal_color=gold_tone`, confidence `0.97`, provenance `image` | `accepted` | `accepted` | The supported value was published |
-| Row 23, Kiss Me High Heel Sandals | `closed_toe → open_toe`, confidence `0.99`, provenance `image+source_text` | `corrected` | `published_with_visual_correction` | The product and corrected description were published using the visible open-toe value |
-| Row 2, Southwest Bracelet | `care` has no supported value | `unknown` | `omitted_not_available` | Care was omitted without blocking the bracelet |
-| Row 4, Isis Bracelet | Unsupported claim: `high-quality crystals` | `review` | `claim_omitted` | The claim was excluded, but the remaining bracelet was published |
-| Row 28, Opulent Velvet Ballet Flats | Classification changes from supplied shoes/flats to visible heels | `review` | `eliminated_for_identity_review` | The complete product was withheld because its identity is contradictory |
-| Row 28, Opulent Velvet Ballet Flats | `low-profile → stiletto`, confidence `0.99`, provenance `image` | `corrected` | `correction_not_published` | The visual finding was recorded, but no field was published because the product identity remained blocked |
-| Row 89, Kaleidoscope Floral Maxi Skirt | Referenced image was not found | `review` | `eliminated_for_missing_visual_evidence` | Multimodal enrichment could not run, so the product was withheld |
-| Row 43, Aria Aviator Sunglasses | Model repeatedly attempted an unsupported visual composition correction | `failed` | `eliminated_for_processing_failure` | No valid result was available after three attempts |
+| Gold-tone bracelet | `metal_color=gold_tone`, confidence `0.97`, provenance `image` | `accepted` | `accepted` | The supported value is published |
+| Red heeled sandal | Supplied text says `closed_toe`; the product is visibly `open_toe`, confidence `0.99`, provenance `image+source_text` | `corrected` | `published_with_visual_correction` | The structured product and grounded description use `open_toe`; the inconsistency remains visible in review |
+| Bracelet without supplied care instructions | `care` has no supported value | `unknown` | `omitted_not_available` | Care is omitted without blocking the bracelet |
+| Crystal bracelet with an unverified quality claim | Unsupported claim: `high-quality crystals` | `review` | `claim_omitted` | The claim is excluded, but the remaining bracelet is published |
+| Footwear described as ballet flats but visibly constructed as stiletto heels | Supplied identity and visible product type disagree | `review` | `eliminated_for_identity_review` | The complete product is withheld because its identity is contradictory |
+| The same identity-blocked footwear | `heel_type: low-profile → stiletto`, confidence `0.99`, provenance `image` | `corrected` | `correction_not_published` | The visual finding is recorded, but no field is published because the complete product remains blocked |
+| Skirt whose referenced image file is absent | Image cannot be loaded | `review` | `eliminated_for_missing_visual_evidence` | Multimodal enrichment cannot run, so the product is withheld |
+| Sunglasses whose model output tries to replace supplied composition using appearance | Nonvisual composition rule remains invalid after three attempts | `failed` | `eliminated_for_processing_failure` | No schema- and evidence-valid result is available |
 
 The important distinction is that `review` does not automatically mean elimination. An unsupported claim may be omitted while the product is published; an unresolved identity conflict eliminates the complete product. Likewise, a `corrected` field is published only when the product itself passes the publication gate.
 
@@ -308,14 +320,14 @@ Provenance definitions:
 
 Accepted fields do not receive verbose generated reasoning. Their value, confidence, and provenance are the routine explanation. `attention_reason` is reserved for rows requiring action.
 
-Example showing both the inconsistency and the publication decision:
+Illustrative review excerpt showing both the inconsistency and the publication decision. Assume CSV row 2 is a fictional red heeled sandal whose supplied description says it is closed-toe while its image clearly shows an open toe:
 
 ```csv
 source_row,field,original_value,enriched_value,confidence,provenance,status,attention_reason,decision,decision_reason
-22,primary_color,,navy,0.96,image,accepted,,accepted,The value passed taxonomy and evidence validation.
-22,composition,,100% cotton,1.0,source_text,accepted,,accepted,The value passed taxonomy and evidence validation.
-22,toe_shape,closed_toe,open_toe,0.99,image,corrected,Source says closed-toe but the image clearly shows an open toe.,published_with_visual_correction,The attribute is directly visible so the visual value replaced the source value in the product and enriched description.
-22,care,,,0.0,,unknown,,omitted_not_available,No sufficiently supported value was available so the attribute was omitted without blocking the product.
+2,primary_color,,red,0.96,image,accepted,,accepted,The value passed taxonomy and evidence validation.
+2,heel_type,,stiletto,0.98,image,accepted,,accepted,The value passed taxonomy and evidence validation.
+2,toe_shape,closed_toe,open_toe,0.99,image+source_text,corrected,Source says closed-toe but the image clearly shows an open toe.,published_with_visual_correction,The attribute is directly visible so the visual value replaced the source value in the product and enriched description.
+2,care,,,0.0,,unknown,,omitted_not_available,No sufficiently supported value was available so the attribute was omitted without blocking the product.
 ```
 
 ### Decision reference
