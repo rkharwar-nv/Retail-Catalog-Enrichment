@@ -33,6 +33,7 @@ DECISIONS_VERSION = "fashion-decisions/0.1"
 RESOLVABLE_REASONS = frozenset({
     "UNRESOLVED_PRODUCT_CLASSIFICATION",
     "DUPLICATE_NAME_IMAGE",
+    "NAME_CONTRADICTS_CLASSIFICATION",
 })
 
 
@@ -50,6 +51,7 @@ class Decision:
     rationale: str
     classification: str | None = None
     record_id: str | None = None
+    name: str | None = None
 
     def resolves_reason(self, reason: str) -> bool:
         return reason in self.resolves
@@ -131,6 +133,12 @@ def load_decisions(path: Path) -> DecisionRegistry:
                 f"Decision for row {source_row} has classification {classification!r}; "
                 "expected 'category/subcategory'."
             )
+        if "NAME_CONTRADICTS_CLASSIFICATION" in resolves and not payload.get("name"):
+            raise DecisionError(
+                f"Decision for row {source_row} resolves NAME_CONTRADICTS_CLASSIFICATION but "
+                "supplies no corrected 'name'. Publishing a product whose name contradicts its "
+                "own category leaves the catalog incoherent, so the corrected name is required."
+            )
         registry.decisions[source_row] = Decision(
             source_row=source_row,
             resolves=resolves,
@@ -138,6 +146,7 @@ def load_decisions(path: Path) -> DecisionRegistry:
             rationale=_require(payload, "rationale", source_row),
             classification=classification,
             record_id=payload.get("record_id"),
+            name=payload.get("name"),
         )
     return registry
 

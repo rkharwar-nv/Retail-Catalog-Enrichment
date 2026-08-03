@@ -50,8 +50,9 @@ def _write_decisions(tmp_path: Path, input_sha: str, *rows: dict) -> Path:
 
 DECISION = {
     "source_row": 2,
-    "resolves": ["UNRESOLVED_PRODUCT_CLASSIFICATION"],
+    "resolves": ["UNRESOLVED_PRODUCT_CLASSIFICATION", "NAME_CONTRADICTS_CLASSIFICATION"],
     "classification": "footwear/heels",
+    "name": "Velvet Stiletto Pumps",
     "reviewer": "reviewer@example.com",
     "rationale": "Image clearly shows a stiletto heel; the merchant name is wrong.",
 }
@@ -70,6 +71,7 @@ def test_load_decisions_reads_rows(tmp_path):
     assert len(registry) == 1
     decision = registry.for_row(2)
     assert decision.classification == "footwear/heels"
+    assert decision.name == "Velvet Stiletto Pumps"
     assert decision.resolves_reason("UNRESOLVED_PRODUCT_CLASSIFICATION")
     assert not decision.resolves_reason("IMAGE_NOT_FOUND")
     assert registry.file_sha256 == _sha(path)
@@ -176,9 +178,17 @@ def test_decision_publishes_a_contested_row(tmp_path, monkeypatch):
     assert record["category"] == "footwear"
     assert record["subcategory"] == "heels"
 
+    # The merchant name is preserved but not published as the product name.
+    assert record["name"] == "Velvet Stiletto Pumps"
+    assert record["merchant_name"] == "Velvet Ballet Flats"
+    # The merchant description described flats, so it is not published either.
+    assert record["description"] == ""
+
     entry = json.loads((out / "decision_ledger.jsonl").read_text().strip())
     assert entry["outcome"] == "published"
-    assert entry["resolved"] == ["UNRESOLVED_PRODUCT_CLASSIFICATION"]
+    assert entry["resolved"] == [
+        "UNRESOLVED_PRODUCT_CLASSIFICATION",
+    ]
     assert entry["reviewer"] == "reviewer@example.com"
 
     manifest = json.loads((out / "run_manifest.json").read_text())
@@ -198,7 +208,6 @@ def test_decision_does_not_publish_an_uncontested_row_differently(tmp_path, monk
 
     assert summary["ready"] == 1
     record = json.loads((out / "enriched_products.jsonl").read_text().strip())
-    # Falls through to the taxonomy mapping, not the reviewer's override.
     assert record["subcategory"] == "heels"
 
 
@@ -227,3 +236,47 @@ def test_stale_decision_file_fails_the_run(tmp_path, monkeypatch):
 
     with pytest.raises(DecisionError):
         run_batch(csv_path, tmp_path, tmp_path / "out", decisions_path=decisions)
+
+
+def test_name_contradicting_its_category_is_held_without_corrected_copy(tmp_path, monkeypatch):
+    """A product named 'Ballet Flats' filed under heels is incoherent to a shopper."""
+    csv_path = _write_csv(tmp_path)
+    _stub_audit(monkeypatch, tmp_path)
+    _stub_enrichment(monkeypatch, conflict=False)
+    out = tmp_path / "out"
+
+    summary = run_batch(csv_path, tmp_path, out)
+
+    assert summary["ready"] == 0
+    assert summary["eliminated"] == 1
+    eliminated = json.loads((out / "eliminated_products.jsonl").read_text().strip())
+    assert eliminated["elimination_reasons"] == ["NAME_CONTRADICTS_CLASSIFICATION"]
+
+
+def test_decision_resolving_name_conflict_must_supply_a_name(tmp_path):
+    csv_path = _write_csv(tmp_path)
+    decision = {key: value for key, value in DECISION.items() if key != "name"}
+    path = _write_decisions(tmp_path, _sha(csv_path), decision)
+    with pytest.raises(DecisionError, match="corrected 'name'"):
+        load_decisions(path)
+
+
+def test_compatible_types_do_not_count_as_contradiction(tmp_path, monkeypatch):
+    """A heeled sandal is an ordinary product, not incoherent copy."""
+    csv_path = _write_csv(
+        tmp_path,
+        "category,subcategory,name,description,price,image\n"
+        "footwear,shoes,Bow Trim Heeled Shoes,An open-toe bow shoe,129.99,item.jpg\n",
+    )
+    _stub_audit(monkeypatch, tmp_path)
+    monkeypatch.setattr(batch_module, "enrich_product", lambda *a, **k: {
+        "product_type": {"value": "footwear.sandals", "status": "accepted"},
+        "attributes": {"primary_color": {"value": "white", "status": "accepted"}},
+        "content": {"enriched_description": "An open-toe bow sandal on a block heel."},
+        "conflicts": [],
+    })
+    out = tmp_path / "out"
+
+    summary = run_batch(csv_path, tmp_path, out)
+
+    assert summary["ready"] == 1

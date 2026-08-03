@@ -18,9 +18,19 @@ from backend.fashion.taxonomy import (
     ATTRIBUTE_VALUES,
     ATTRIBUTE_VERSION,
     CORROBORATES,
+    PRODUCT_ATTRIBUTES,
     TAXONOMY_VERSION,
+    name_product_signal,
     resolve_product_type,
+    types_compatible,
 )
+
+# (category, subcategory) -> canonical product type; the forward mapping takes
+# the first and last dotted parts, and each type yields a unique pair.
+CLASSIFICATION_TO_TYPE = {
+    (product_type.split(".")[0], product_type.split(".")[-1]): product_type
+    for product_type in PRODUCT_ATTRIBUTES
+}
 
 logger = logging.getLogger("catalog_enrichment.fashion.batch")
 PUBLICATION_POLICY_VERSION = "fashion-publication/0.4"
@@ -34,6 +44,7 @@ ELIMINATION_EXPLANATIONS = {
     "MODEL_ENRICHMENT_FAILED": "Cause: model-output validation failure. After three attempts, the model output still failed schema, taxonomy, value, applicability, or evidence validation. This does not by itself mean that the input text conflicts with the image.",
     "UNRESOLVED_PRODUCT_CLASSIFICATION": "Cause: input-text-versus-image conflict. The input text or structured data and visual analysis identify different product types. Publishing either classification without review would create an unverified catalog identity.",
     "ENRICHMENT_NOT_AVAILABLE": "Cause: incomplete enrichment. The workflow could not produce a complete, internally consistent, publication-ready record.",
+    "NAME_CONTRADICTS_CLASSIFICATION": "Cause: incoherent product copy. The product name states a different product type than the one the product was classified as. Publishing it would show shoppers a name that contradicts the category, filters, and description, so corrected copy is required before publication.",
 }
 
 
@@ -216,6 +227,20 @@ def _review_rows(record_id: str, row_number: int, source: dict[str, Any], result
     return rows
 
 
+def _name_contradicts(
+    source: dict[str, Any], result: dict[str, Any], classification: str | None,
+) -> bool:
+    """Whether the product name states a product type the classification denies."""
+    if classification:
+        published_type = CLASSIFICATION_TO_TYPE.get(tuple(classification.split("/", 1)))
+    else:
+        published_type = (result.get("product_type") or {}).get("value")
+    signal = name_product_signal(source.get("name", ""))
+    if not signal or not published_type:
+        return False
+    return not types_compatible(signal, published_type)
+
+
 def _dropped_attribute_rows(
     record_id: str, row_number: int, source: dict[str, Any], result: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -271,6 +296,7 @@ def _catalog_record(
     result: dict[str, Any],
     currency: str | None,
     classification: str | None = None,
+    decision: Any = None,
 ) -> dict[str, Any]:
     product_type = result["product_type"]["value"]
     if classification:
@@ -299,6 +325,12 @@ def _catalog_record(
     enriched_description = (result.get("content") or {}).get("enriched_description")
     if enriched_description:
         record["enriched_description"] = enriched_description
+    if decision is not None and getattr(decision, "name", None):
+        # Keep the merchant's original for traceability, but do not publish a
+        # description that contradicts the corrected name.
+        record["merchant_name"] = record.get("name", "")
+        record["name"] = decision.name
+        record["description"] = ""
     return record
 
 
@@ -392,10 +424,27 @@ def run_batch(
                     resolution["publish"] = CORROBORATES in (
                         resolution["name_verdict"], resolution["column_verdict"],
                     )
-            if not validate_only and not contested:
-                catalog_records.append(_catalog_record(record_id, row_number, source, result, currency))
+            classification = decision.classification if decision and decision.classification else None
+            incoherent = _name_contradicts(source, result, classification)
+            if not validate_only and incoherent and not (decision and decision.name):
+                # A name stating a different product type than the category is
+                # incoherent to a shopper, however sound the taxonomy is.
+                reasons = ["NAME_CONTRADICTS_CLASSIFICATION"]
+                eliminated_records.append({
+                    **source, "record_id": record_id, "source_row": row_number,
+                    "elimination_reasons": reasons,
+                    "elimination_explanations": _elimination_explanations(reasons, result),
+                })
+                if decision is not None:
+                    decision_ledger.append(ledger_entry(decision, source, reasons, False))
+            elif not validate_only and not contested:
+                catalog_records.append(_catalog_record(
+                    record_id, row_number, source, result, currency, classification, decision,
+                ))
             elif not validate_only and resolution and resolution["publish"]:
-                catalog_records.append(_catalog_record(record_id, row_number, source, result, currency))
+                catalog_records.append(_catalog_record(
+                    record_id, row_number, source, result, currency, classification, decision,
+                ))
                 disposition = "REVIEW"
                 if resolution["outlier"]:
                     review_rows.append(_outlier_review_row(record_id, row_number, source, resolution))
@@ -404,7 +453,8 @@ def run_batch(
                 reviewed = decision is not None and decision.resolves_reason(reasons[0])
                 if reviewed:
                     catalog_records.append(_catalog_record(
-                        record_id, row_number, source, result, currency, decision.classification,
+                        record_id, row_number, source, result, currency,
+                        decision.classification, decision,
                     ))
                     disposition = "REVIEW"
                 else:

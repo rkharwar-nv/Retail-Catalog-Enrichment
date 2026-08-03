@@ -123,6 +123,21 @@ COMPATIBLE = "compatible"
 SILENT = "silent"
 
 
+# Product types that can legitimately describe one product, so a name citing one
+# does not contradict a classification of the other. A heeled sandal and a heeled
+# boot are ordinary products; a heeled flat is not.
+COMPATIBLE_TYPES: frozenset[frozenset[str]] = frozenset({
+    frozenset({"footwear.heels", "footwear.sandals"}),
+    frozenset({"footwear.heels", "footwear.boots"}),
+    frozenset({"footwear.flats", "footwear.sandals"}),
+})
+
+
+def types_compatible(first: str, second: str) -> bool:
+    """Whether two product types can describe the same product."""
+    return first == second or frozenset({first, second}) in COMPATIBLE_TYPES
+
+
 def name_product_signal(name: str) -> str | None:
     """Return the product type a merchant name implies, or None if it is unclear.
 

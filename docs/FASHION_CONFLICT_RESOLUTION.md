@@ -187,3 +187,30 @@ filter over rows that were never in dispute.
 Outputs are `enriched_products.jsonl`, a per-row `rebuild_ledger.jsonl` naming
 how each row was resolved and which run its enrichment came from, plus a summary
 and a manifest pinning every input hash.
+
+## Incoherent product copy
+
+A correct classification is not enough. A product named "Ballet Flats" filed
+under `footwear/heels` is incoherent to a shopper whatever the taxonomy says:
+the name contradicts the category, the filters, and the enriched description,
+and the merchant description usually contradicts them too.
+
+So when the product name states a product type that the published
+classification denies, the row is held with
+`NAME_CONTRADICTS_CLASSIFICATION`. It publishes only when a decision supplies a
+corrected `name`. Loading a decision that resolves this reason without one is an
+error, because publishing without corrected copy is the very thing the rule
+exists to prevent.
+
+When corrected copy is supplied:
+
+- the corrected `name` is published
+- the original is preserved as `merchant_name`
+- the merchant `description` is **not** published, since it describes the
+  contradicted product type; the enriched description already describes the
+  product correctly
+
+Some product types can legitimately describe one product, and those do not
+count as contradictions — a heeled sandal and a heeled boot are ordinary
+products, so a name mentioning a heel does not contradict `footwear/sandals`.
+A heeled flat is not, so that pair still raises the conflict.

@@ -35,7 +35,9 @@ from backend.fashion.taxonomy import (
     ATTRIBUTE_VERSION,
     PRODUCT_ATTRIBUTES,
     TAXONOMY_VERSION,
+    name_product_signal,
     resolve_product_type,
+    types_compatible,
 )
 
 # Fields carried straight from the source row.
@@ -186,8 +188,28 @@ def rebuild(
             ledger.append(entry)
             continue
 
+        # A product whose own name names a different product type than the one it
+        # is filed under is incoherent to a shopper, however sound the taxonomy.
+        # It is held until a decision supplies corrected copy.
+        published_type = CLASSIFICATION_TO_TYPE.get(tuple(classification.split("/", 1)))
+        name_signal = name_product_signal(source.get("name", ""))
+        if name_signal and published_type and not types_compatible(name_signal, published_type):
+            if not (decision and decision.name):
+                entry["reason"] = "NAME_CONTRADICTS_CLASSIFICATION"
+                entry["resolved_by"] = None
+                ledger.append(entry)
+                continue
+            entry["corrected_name"] = decision.name
+            entry["merchant_name"] = source.get("name", "")
+
         category, subcategory = classification.split("/", 1)
         published = {key: source.get(key, "") for key in SOURCE_FIELDS}
+        if decision and decision.name:
+            # Keep the merchant's original for traceability, but do not publish a
+            # description that contradicts the corrected name.
+            published["merchant_name"] = published["name"]
+            published["name"] = decision.name
+            published["description"] = ""
         published["category"] = category
         published["subcategory"] = subcategory
         published["record_id"] = record_id
@@ -219,7 +241,7 @@ def rebuild(
         "source_row", "name", "record_id", "published", "in_baseline", "gate_reasons",
         "source_category", "visual_classification", "classification", "name_signal",
         "name_verdict", "subcategory_verdict", "outlier", "resolved_by", "reviewer", "reason",
-        "enrichment_run",
+        "merchant_name", "corrected_name", "enrichment_run",
     ]
     with (output_dir / "reconciliation.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=reconciliation_fields, extrasaction="ignore")
