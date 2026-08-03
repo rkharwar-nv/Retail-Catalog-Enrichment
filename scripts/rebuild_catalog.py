@@ -343,7 +343,16 @@ def rebuild(
         writer = csv.DictWriter(handle, fieldnames=reconciliation_fields, extrasaction="ignore")
         writer.writeheader()
         for entry in ledger:
-            if entry["status"] in {"ADDED", "UPDATED", "DROPPED"} or entry.get("contested"):
+            # Substantive changes only. Two runs of the same model produce
+            # different prose for nearly every row; listing those here would bury
+            # the rows that actually need a look.
+            substantive = (
+                entry["status"] in {"ADDED", "DROPPED"}
+                or entry.get("contested")
+                or "classification " in (entry["changes"] or "")
+                or "name " in (entry["changes"] or "")
+            )
+            if substantive:
                 row = dict(entry)
                 row["gate_reasons"] = ", ".join(entry.get("gate_reasons") or [])
                 writer.writerow(row)
@@ -423,10 +432,21 @@ def rebuild(
             for status in ("ADDED", "UPDATED", "UNCHANGED", "DROPPED")
         }
         summary["record_ids_changed"] = sum(bool(e.get("record_id_changed")) for e in ledger)
-        summary["updated_vs_baseline"] = [
+        summary["reclassified_vs_baseline"] = [
             {"source_row": e["source_row"], "name": e["name"], "changes": e["changes"]}
-            for e in ledger if e["status"] == "UPDATED"
+            for e in ledger
+            if e["status"] == "UPDATED"
+            and ("classification " in (e["changes"] or "") or "name " in (e["changes"] or ""))
         ]
+        # Every other UPDATED row differs only in enriched prose or attributes,
+        # which is expected when the enrichment source run changes. Per-row
+        # detail is in rebuild_ledger.jsonl.
+        summary["content_only_changes"] = sum(
+            1 for e in ledger
+            if e["status"] == "UPDATED"
+            and "classification " not in (e["changes"] or "")
+            and "name " not in (e["changes"] or "")
+        )
         summary["added_vs_baseline"] = sorted(
             e["source_row"] for e in ledger if e["published"] and not e["in_baseline"]
         )

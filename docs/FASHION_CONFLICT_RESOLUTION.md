@@ -7,6 +7,9 @@ The guiding rule: **never invent a claim, but never lose a product to a problem
 the data already answers.** Most merchant data is not ambiguous — it is merely
 mislabelled, and the label that is wrong can usually be identified.
 
+A real run's output, including its ledgers, is in
+[`examples/fashion-catalog/`](../examples/fashion-catalog/).
+
 - [Classification conflicts](#classification-conflicts)
 - [Attribute conflicts](#attribute-conflicts)
 - [Poor product information](#poor-product-information)
