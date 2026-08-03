@@ -14,7 +14,13 @@ from backend.fashion.audit import audit_row
 from backend.fashion.service import enrich_product
 from backend.config import get_config
 from backend.fashion.decisions import DECISIONS_VERSION, ledger_entry, load_decisions
-from backend.fashion.taxonomy import ATTRIBUTE_VERSION, TAXONOMY_VERSION
+from backend.fashion.taxonomy import (
+    ATTRIBUTE_VALUES,
+    ATTRIBUTE_VERSION,
+    CORROBORATES,
+    TAXONOMY_VERSION,
+    resolve_product_type,
+)
 
 logger = logging.getLogger("catalog_enrichment.fashion.batch")
 PUBLICATION_POLICY_VERSION = "fashion-publication/0.4"
@@ -35,19 +41,34 @@ def _has_source_id(row: dict[str, Any]) -> bool:
     return any(str(row.get(key) or "").strip() for key in ("product_id", "sku", "id"))
 
 
+# Fields that distinguish one product from another when the merchant supplies no
+# stable id. Name and image alone are not enough: two rows can share both and
+# still be different products at different prices.
+IDENTITY_FIELDS = ("name", "image", "url", "price", "description")
+
+
+def _identity(row: dict[str, Any]) -> dict[str, str]:
+    return {key: str(row.get(key) or "").strip().lower() for key in IDENTITY_FIELDS}
+
+
 def _record_id(csv_path: Path, row_number: int, row: dict[str, Any]) -> str:
     for key in ("product_id", "sku", "id"):
         if str(row.get(key) or "").strip():
             return str(row[key]).strip()
-    identity = {key: str(row.get(key) or "").strip().lower() for key in ("name", "image", "url")}
-    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
+    digest = hashlib.sha256(json.dumps(_identity(row), sort_keys=True).encode()).hexdigest()[:16]
     return f"generated:{digest}"
 
 
-def _duplicate_key(row: dict[str, Any]) -> tuple[str, str]:
-    name = str(row.get("name") or "").strip().casefold()
-    image = Path(str(row.get("image") or "")).name.casefold()
-    return name, image
+def _duplicate_key(row: dict[str, Any]) -> tuple[str, ...]:
+    """Rows are ambiguous only when nothing distinguishes them.
+
+    Sharing a name and image is not enough. If price or description differ, the
+    rows describe different products that happen to reuse an image, and each can
+    be published under its own generated id.
+    """
+    identity = _identity(row)
+    identity["image"] = Path(identity["image"]).name
+    return tuple(identity[key] for key in sorted(identity))
 
 
 def _elimination_explanations(reasons: list[str], result: dict[str, Any] | None = None, detail: str = "") -> list[str]:
@@ -195,6 +216,54 @@ def _review_rows(record_id: str, row_number: int, source: dict[str, Any], result
     return rows
 
 
+def _dropped_attribute_rows(
+    record_id: str, row_number: int, source: dict[str, Any], result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Report attributes omitted because they could not be sourced legally."""
+    rows = []
+    for name, detail in (result.get("_dropped_attributes") or {}).items():
+        filtered = name in ATTRIBUTE_VALUES
+        rows.append({
+            "record_id": record_id, "source_row": row_number, "product_name": source.get("name", ""),
+            "field": name, "original_value": "", "enriched_value": "", "confidence": "",
+            "provenance": "", "status": "review", "attention_reason": detail,
+            "decision": "published_without_attribute",
+            "decision_reason": (
+                f"The product was published without {name}, which could not be evidenced within the "
+                "retry budget. " + (
+                    f"{name} is a filterable field, so this product will not appear when customers "
+                    "filter on it." if filtered else
+                    "No value was invented; the field is simply absent."
+                )
+            ),
+        })
+    return rows
+
+
+def _outlier_review_row(
+    record_id: str, row_number: int, source: dict[str, Any], resolution: dict[str, Any],
+) -> dict[str, Any]:
+    """Flag the one signal that disagreed with the published classification."""
+    outlier = resolution["outlier"]
+    original = source.get("name", "") if outlier == "name" else source.get("subcategory", "")
+    return {
+        "record_id": record_id, "source_row": row_number, "product_name": source.get("name", ""),
+        "field": f"product_type:{outlier}", "original_value": original,
+        "enriched_value": resolution["product_type"], "confidence": "",
+        "provenance": "source_text" if outlier == "name" else "source_structured",
+        "status": "review",
+        "attention_reason": (
+            f"The supplied {outlier} disagrees with the published classification "
+            f"{resolution['product_type']!r}, which the other two signals support."
+        ),
+        "decision": "published_with_outlier_signal",
+        "decision_reason": (
+            f"Two of the three classification signals agree, so the product was published. "
+            f"The {outlier} is likely wrong in the source catalog and should be corrected there."
+        ),
+    }
+
+
 def _catalog_record(
     record_id: str,
     row_number: int,
@@ -312,8 +381,24 @@ def run_batch(
 
         if result is not None:
             review_rows.extend(_review_rows(record_id, row_number, source, result))
-            if not validate_only and not product_type_conflict and not product_type_unresolved:
+            review_rows.extend(_dropped_attribute_rows(record_id, row_number, source, result))
+            contested = product_type_conflict or product_type_unresolved
+            resolution = None
+            if contested:
+                resolution = resolve_product_type(source, (result.get("product_type") or {}).get("value") or "")
+                if product_type_unresolved and resolution["outlier"] is None:
+                    # The model itself was unsure of the value. Publish only when a
+                    # signal specifically corroborates it, not merely fails to object.
+                    resolution["publish"] = CORROBORATES in (
+                        resolution["name_verdict"], resolution["column_verdict"],
+                    )
+            if not validate_only and not contested:
                 catalog_records.append(_catalog_record(record_id, row_number, source, result, currency))
+            elif not validate_only and resolution and resolution["publish"]:
+                catalog_records.append(_catalog_record(record_id, row_number, source, result, currency))
+                disposition = "REVIEW"
+                if resolution["outlier"]:
+                    review_rows.append(_outlier_review_row(record_id, row_number, source, resolution))
             elif not validate_only:
                 reasons = ["UNRESOLVED_PRODUCT_CLASSIFICATION"]
                 reviewed = decision is not None and decision.resolves_reason(reasons[0])
@@ -347,21 +432,23 @@ def run_batch(
                 # A decision cannot supply enrichment that was never produced, so these
                 # rows stay eliminated. The ledger records that the review was seen.
                 decision_ledger.append(ledger_entry(decision, source, reasons, False))
-            if audit.issues:
-                input_failed = audit.disposition == "FAIL"
-                review_rows.append({
-                    "record_id": record_id, "source_row": row_number, "product_name": source.get("name", ""),
-                    "field": "input_validation" if input_failed else "image",
-                    "original_value": "" if input_failed else source.get("image", ""),
-                    "enriched_value": "", "confidence": "", "provenance": "",
-                    "status": "failed" if input_failed else "review",
-                    "attention_reason": ", ".join(audit.issues),
-                    "decision": "eliminated_for_invalid_input" if input_failed else "eliminated_for_missing_visual_evidence",
-                    "decision_reason": (
-                        "The input row failed the required publication contract."
-                        if input_failed else "The image could not be analyzed, so multimodal enrichment was not possible."
-                    ),
-                })
+        # Input problems are reported even in validate-only runs, which exist to
+        # surface exactly these before spending model calls.
+        if audit.issues:
+            input_failed = audit.disposition == "FAIL"
+            review_rows.append({
+                "record_id": record_id, "source_row": row_number, "product_name": source.get("name", ""),
+                "field": "input_validation" if input_failed else "image",
+                "original_value": "" if input_failed else source.get("image", ""),
+                "enriched_value": "", "confidence": "", "provenance": "",
+                "status": "failed" if input_failed else "review",
+                "attention_reason": ", ".join(audit.issues),
+                "decision": "eliminated_for_invalid_input" if input_failed else "eliminated_for_missing_visual_evidence",
+                "decision_reason": (
+                    "The input row failed the required publication contract."
+                    if input_failed else "The image could not be analyzed, so multimodal enrichment was not possible."
+                ),
+            })
         disposition_rows.append({"disposition": disposition})
 
     if catalog_records:

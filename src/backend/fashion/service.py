@@ -3,7 +3,13 @@
 from typing import Any
 
 from backend.fashion.models import enrich_with_omni
-from backend.fashion.taxonomy import add_source_category_conflict, normalize_enrichment, validate_enrichment
+from backend.fashion.taxonomy import (
+    add_source_category_conflict,
+    neutralize_attributes,
+    normalize_enrichment,
+    partition_errors,
+    validate_enrichment,
+)
 
 
 def enrich_product(source: dict[str, Any], image_bytes: bytes, content_type: str, locale: str = "en-US") -> dict[str, Any]:
@@ -40,6 +46,20 @@ def enrich_product(source: dict[str, Any], image_bytes: bytes, content_type: str
     else:
         if last_error and not errors:
             raise last_error
-        raise ValueError("Invalid fashion enrichment: " + "; ".join(errors))
+        # Retries are exhausted. A record is only lost if something record-fatal
+        # remains; attributes that could not be sourced legally are marked unknown
+        # so one optional field does not cost the whole product.
+        fatal, per_attribute = partition_errors(errors)
+        if fatal or not per_attribute:
+            raise ValueError("Invalid fashion enrichment: " + "; ".join(errors))
+        neutralize_attributes(result, per_attribute)
+        remaining = validate_enrichment(result, source)
+        if remaining:
+            raise ValueError("Invalid fashion enrichment: " + "; ".join(remaining))
+        result["_dropped_attributes"] = {
+            name: "; ".join(messages) for name, messages in sorted(per_attribute.items())
+        }
+        if rejected_errors:
+            result["_retry_corrections"] = list(dict.fromkeys(rejected_errors))
     add_source_category_conflict(result, source)
     return result

@@ -383,8 +383,8 @@ def test_ambiguous_duplicates_are_eliminated_without_model_calls(tmp_path, sampl
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=["name", "description", "price", "image"])
         writer.writeheader()
-        writer.writerow({"name": "Same Bag", "description": "First", "price": "20", "image": "/images/bag.png"})
-        writer.writerow({"name": "Same Bag", "description": "Second", "price": "30", "image": "/images/bag.png"})
+        writer.writerow({"name": "Same Bag", "description": "Identical", "price": "20", "image": "/images/bag.png"})
+        writer.writerow({"name": "Same Bag", "description": "Identical", "price": "20", "image": "/images/bag.png"})
 
     with patch("backend.fashion.batch.enrich_product") as mock_enrich:
         summary = run_batch(csv_path, images, tmp_path / "output")
@@ -396,6 +396,29 @@ def test_ambiguous_duplicates_are_eliminated_without_model_calls(tmp_path, sampl
     assert eliminated[0]["record_id"] == eliminated[1]["record_id"]
     assert eliminated[0]["elimination_reasons"] == ["DUPLICATE_NAME_IMAGE"]
     assert "cannot determine" in eliminated[0]["elimination_explanations"][0]
+
+
+def test_rows_sharing_a_name_and_image_are_distinct_when_price_differs(tmp_path, sample_image_bytes):
+    """Reusing one image for two products is a merchant mistake, not an identity clash."""
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "bag.png").write_bytes(sample_image_bytes)
+    csv_path = tmp_path / "products.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["name", "description", "price", "image"])
+        writer.writeheader()
+        writer.writerow({"name": "Same Bag", "description": "First", "price": "20", "image": "/images/bag.png"})
+        writer.writerow({"name": "Same Bag", "description": "Second", "price": "30", "image": "/images/bag.png"})
+
+    with patch("backend.fashion.batch.enrich_product") as mock_enrich:
+        mock_enrich.return_value = _valid_result()
+        summary = run_batch(csv_path, images, tmp_path / "output")
+
+    assert summary["eliminated"] == 0
+    assert mock_enrich.call_count == 2
+    records = [json.loads(line) for line in (tmp_path / "output" / "enriched_products.jsonl").read_text().splitlines()]
+    # Distinct products must not collide on a generated id.
+    assert records[0]["record_id"] != records[1]["record_id"]
 
 
 @patch("backend.fashion.service.enrich_with_omni")

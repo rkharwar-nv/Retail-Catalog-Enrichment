@@ -1,6 +1,6 @@
 """Small, versioned taxonomy used by fashion enrichment."""
 
-from typing import Any
+from typing import Any, Iterable
 
 TAXONOMY_VERSION = "fashion-product-types/0.1"
 ATTRIBUTE_VERSION = "fashion-attributes/0.1"
@@ -82,6 +82,122 @@ SOURCE_SUBCATEGORY_PREFIXES = {
     "earrings": ("jewelry.earrings",),
     "necklace": ("jewelry.necklaces",),
 }
+
+
+# Product-type keywords found in merchant product names, most specific first.
+# The name is a third classification signal alongside the subcategory column and
+# the image. A name that mentions several types is treated as saying nothing,
+# not as voting for whichever keyword happens to appear first.
+NAME_PRODUCT_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("jumpsuit", "apparel.jumpsuits"),
+    ("camisole", "apparel.tops.camisoles"),
+    ("blouse", "apparel.tops.blouses"),
+    ("sweater", "apparel.knitwear.sweaters"),
+    ("cardigan", "apparel.knitwear.sweaters"),
+    ("dress", "apparel.dresses"),
+    ("skirt", "apparel.skirts"),
+    ("sunglasses", "eyewear.sunglasses"),
+    ("boot", "footwear.boots"),
+    ("sandal", "footwear.sandals"),
+    ("espadrille", "footwear.sandals"),
+    ("flat", "footwear.flats"),
+    ("heel", "footwear.heels"),
+    ("pump", "footwear.heels"),
+    ("stiletto", "footwear.heels"),
+    ("clutch", "bags.clutches"),
+    ("crossbody", "bags.crossbody_bags"),
+    ("satchel", "bags.satchels"),
+    ("tote", "bags.tote_bags"),
+    ("shoulder bag", "bags.shoulder_bags"),
+    ("travel bag", "bags.travel_bags"),
+    ("bracelet", "jewelry.bracelets"),
+    ("earring", "jewelry.earrings"),
+    ("necklace", "jewelry.necklaces"),
+    ("watch", "jewelry.watches"),
+)
+
+# How a signal relates to the visually determined product type.
+CORROBORATES = "corroborates"
+CONTRADICTS = "contradicts"
+COMPATIBLE = "compatible"
+SILENT = "silent"
+
+
+def name_product_signal(name: str) -> str | None:
+    """Return the product type a merchant name implies, or None if it is unclear.
+
+    A name mentioning two different product types ("Woven Lace Blouse Sweater")
+    cannot adjudicate between them, so it abstains rather than guessing.
+    """
+    text = f" {str(name or '').strip().casefold()} "
+    matched = {product_type for keyword, product_type in NAME_PRODUCT_KEYWORDS if keyword in text}
+    return matched.pop() if len(matched) == 1 else None
+
+
+def _column_product_types(subcategory: str) -> tuple[str, ...]:
+    """Product types the supplied subcategory column allows."""
+    prefixes = SOURCE_SUBCATEGORY_PREFIXES.get(str(subcategory or "").strip().lower())
+    if not prefixes:
+        return ()
+    return tuple(
+        product_type for product_type in PRODUCT_ATTRIBUTES
+        if any(product_type == prefix or product_type.startswith(prefix) for prefix in prefixes)
+    )
+
+
+def column_verdict(subcategory: str, product_type: str) -> str:
+    """How the subcategory column relates to the visually determined type."""
+    allowed = _column_product_types(subcategory)
+    if not allowed:
+        return SILENT
+    if product_type not in allowed:
+        return CONTRADICTS
+    # A column naming exactly one type corroborates it. A coarse column such as
+    # 'shoes' covers several types, so it cannot settle a dispute between them.
+    return CORROBORATES if len(allowed) == 1 else COMPATIBLE
+
+
+def name_verdict(name: str, product_type: str) -> str:
+    signal = name_product_signal(name)
+    if signal is None:
+        return SILENT
+    return CORROBORATES if signal == product_type else CONTRADICTS
+
+
+def resolve_product_type(source: dict[str, Any], product_type: str) -> dict[str, Any]:
+    """Weigh name, subcategory column, and image to decide whether to publish.
+
+    The catalog carries three independent voices on what a product is. Publishing
+    only when all three agree discards products whose merchant metadata is merely
+    mislabelled, which is the common case. Publishing whenever any one agrees
+    would ignore genuine ambiguity. So a specific corroborating signal wins, and
+    a contradiction with no specific corroboration is left for a human.
+    """
+    name = str(source.get("name") or "")
+    subcategory = str(source.get("subcategory") or "")
+    name_result = name_verdict(name, product_type)
+    column_result = column_verdict(subcategory, product_type)
+
+    if name_result == CORROBORATES or column_result == CORROBORATES:
+        publish = True
+    else:
+        publish = name_result != CONTRADICTS and column_result != CONTRADICTS
+
+    outlier = None
+    if publish:
+        if name_result == CONTRADICTS:
+            outlier = "name"
+        elif column_result == CONTRADICTS:
+            outlier = "subcategory"
+
+    return {
+        "publish": publish,
+        "product_type": product_type,
+        "name_verdict": name_result,
+        "column_verdict": column_result,
+        "name_signal": name_product_signal(name),
+        "outlier": outlier,
+    }
 
 
 def _normalize_sources(sources: Any) -> Any:
@@ -251,6 +367,46 @@ def validate_enrichment(value: dict[str, Any], source: dict[str, Any] | None = N
             if "image" not in (attribute.get("sources") or []):
                 errors.append(f"{field} conflict: visual correction requires image evidence")
     return errors
+
+
+ALL_ATTRIBUTES = set().union(*PRODUCT_ATTRIBUTES.values())
+
+
+def partition_errors(errors: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+    """Split validation errors into record-fatal ones and per-attribute ones.
+
+    An unusable product_type or a missing enriched_description means there is no
+    publishable record. A single optional attribute that could not be sourced
+    legally does not, so those are reported separately and can be dropped.
+    """
+    fatal: list[str] = []
+    per_attribute: dict[str, list[str]] = {}
+    for error in errors:
+        field = error.split(":", 1)[0].strip()
+        if field in ALL_ATTRIBUTES:
+            per_attribute.setdefault(field, []).append(error)
+        else:
+            fatal.append(error)
+    return fatal, per_attribute
+
+
+def neutralize_attributes(value: dict[str, Any], names: Iterable[str]) -> None:
+    """Mark attributes as unknown instead of dropping the whole record.
+
+    The attribute stays present so the schema's evidence-assessment requirement
+    is still met, but with a null value and 'unknown' status it is not emitted
+    into the catalog record. No claim is invented, and no product is lost to one
+    unsourceable field.
+    """
+    attributes = value.setdefault("attributes", {})
+    for name in names:
+        attributes[name] = {"value": None, "status": "unknown", "sources": []}
+    conflicts = value.get("conflicts")
+    if isinstance(conflicts, list):
+        value["conflicts"] = [
+            item for item in conflicts
+            if not (isinstance(item, dict) and item.get("field") in set(names))
+        ]
 
 
 def add_source_category_conflict(value: dict[str, Any], source: dict[str, Any]) -> None:

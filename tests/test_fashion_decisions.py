@@ -16,9 +16,13 @@ from backend.fashion.decisions import (
     load_decisions,
 )
 
+# A genuinely ambiguous row: the name says flats, the image says heels, and the
+# 'shoes' column covers both, so no signal can break the tie. Rows where two of
+# the three signals agree are resolved by the classifier and never reach the
+# decision layer -- see test_fashion_unit.py.
 CSV_TEXT = (
     "category,subcategory,name,description,price,image\n"
-    "apparel,dress,Sequin Jumpsuit,A sequinned evening piece,179.99,item.jpg\n"
+    "footwear,shoes,Velvet Ballet Flats,A plush velvet flat,159.99,item.jpg\n"
 )
 
 
@@ -47,9 +51,9 @@ def _write_decisions(tmp_path: Path, input_sha: str, *rows: dict) -> Path:
 DECISION = {
     "source_row": 2,
     "resolves": ["UNRESOLVED_PRODUCT_CLASSIFICATION"],
-    "classification": "apparel/jumpsuits",
+    "classification": "footwear/heels",
     "reviewer": "reviewer@example.com",
-    "rationale": "Name and image both say jumpsuit; only the subcategory column said dress.",
+    "rationale": "Image clearly shows a stiletto heel; the merchant name is wrong.",
 }
 
 
@@ -65,7 +69,7 @@ def test_load_decisions_reads_rows(tmp_path):
 
     assert len(registry) == 1
     decision = registry.for_row(2)
-    assert decision.classification == "apparel/jumpsuits"
+    assert decision.classification == "footwear/heels"
     assert decision.resolves_reason("UNRESOLVED_PRODUCT_CLASSIFICATION")
     assert not decision.resolves_reason("IMAGE_NOT_FOUND")
     assert registry.file_sha256 == _sha(path)
@@ -121,12 +125,12 @@ def test_duplicate_rows_are_rejected(tmp_path):
 def _stub_enrichment(monkeypatch, conflict: bool):
     """Return an enrichment result whose product_type is accepted or contested."""
     result = {
-        "product_type": {"value": "apparel.dresses", "status": "review" if conflict else "accepted"},
-        "attributes": {"primary_color": {"value": "black", "status": "accepted"}},
-        "content": {"enriched_description": "A sequinned evening piece."},
+        "product_type": {"value": "footwear.heels", "status": "review" if conflict else "accepted"},
+        "attributes": {"primary_color": {"value": "red", "status": "accepted"}},
+        "content": {"enriched_description": "A plush velvet shoe."},
         "conflicts": (
-            [{"field": "product_type", "source_value": "dress",
-              "visual_value": "apparel.jumpsuits", "reason": "Image shows a jumpsuit."}]
+            [{"field": "product_type", "source_value": "ballet flats",
+              "visual_value": "footwear.heels", "reason": "Image shows a stiletto heel."}]
             if conflict else []
         ),
     }
@@ -169,8 +173,8 @@ def test_decision_publishes_a_contested_row(tmp_path, monkeypatch):
     assert summary["decisions_applied"] == 1
 
     record = json.loads((out / "enriched_products.jsonl").read_text().strip())
-    assert record["category"] == "apparel"
-    assert record["subcategory"] == "jumpsuits"
+    assert record["category"] == "footwear"
+    assert record["subcategory"] == "heels"
 
     entry = json.loads((out / "decision_ledger.jsonl").read_text().strip())
     assert entry["outcome"] == "published"
@@ -195,7 +199,7 @@ def test_decision_does_not_publish_an_uncontested_row_differently(tmp_path, monk
     assert summary["ready"] == 1
     record = json.loads((out / "enriched_products.jsonl").read_text().strip())
     # Falls through to the taxonomy mapping, not the reviewer's override.
-    assert record["subcategory"] == "dresses"
+    assert record["subcategory"] == "heels"
 
 
 def test_run_is_reproducible_across_identical_runs(tmp_path, monkeypatch):
@@ -219,7 +223,7 @@ def test_stale_decision_file_fails_the_run(tmp_path, monkeypatch):
     _stub_audit(monkeypatch, tmp_path)
     _stub_enrichment(monkeypatch, conflict=True)
     decisions = _write_decisions(tmp_path, _sha(csv_path), DECISION)
-    csv_path.write_text(CSV_TEXT.replace("179.99", "189.99"), encoding="utf-8")
+    csv_path.write_text(CSV_TEXT.replace("159.99", "189.99"), encoding="utf-8")
 
     with pytest.raises(DecisionError):
         run_batch(csv_path, tmp_path, tmp_path / "out", decisions_path=decisions)

@@ -84,3 +84,28 @@ deterministic. What the decision file makes reproducible is the **policy**:
 which rows publish, under which classification, on whose authority. To
 reproduce a catalog exactly, reuse the published artifacts rather than re-running
 enrichment.
+
+## When a decision is needed at all
+
+Most eliminations are not genuine ambiguity — they are merchant metadata that
+disagrees with itself. The gate weighs three independent signals before asking
+for a human:
+
+| Signal | Source |
+|---|---|
+| product name | the merchant `name` column |
+| subcategory | the merchant `subcategory` column |
+| image | the visual product type |
+
+A signal only counts when it is specific. `subcategory: shoes` covers heels,
+flats, boots and sandals, so it cannot settle a dispute between them, and a name
+mentioning two types ("Woven Lace Blouse Sweater") abstains rather than guessing.
+
+The product publishes when a specific signal corroborates the visual type, or
+when nothing contradicts it. The disagreeing signal is recorded in
+`enrichment_review.csv` as `published_with_outlier_signal` so the source catalog
+can be corrected. Only a genuine tie — one specific signal against the image,
+with no third signal able to break it — needs a decision entry.
+
+For the 218-row reference catalog this reduced the decision file from seven
+entries to one.
