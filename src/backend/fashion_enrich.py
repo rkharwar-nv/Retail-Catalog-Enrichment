@@ -83,10 +83,12 @@ def _locale_info(locale: str) -> dict[str, str]:
 def _default_extra_body() -> dict[str, Any]:
     """Parse optional endpoint-specific request extras from the environment.
 
-    NVIDIA NIM reasoning models accept
-    ``{"chat_template_kwargs": {"enable_thinking": false}}``; plain OpenAI
-    endpoints reject unknown fields. Default to *no* extras for broad
-    compatibility, and let NIM users opt in with ``FASHION_VLM_EXTRA_BODY``.
+    Every backend chat-completion call in this repository disables model
+    "thinking" (see ``tests/test_llm_thinking_config.py``), so that is applied at
+    the call site and is not this function's job. What comes back from here is
+    merged on top, which lets a NIM deployment add fields or a strict
+    OpenAI-compatible endpoint clear the default with
+    ``FASHION_VLM_EXTRA_BODY='{"chat_template_kwargs": {}}'``.
     """
     raw = os.getenv("FASHION_VLM_EXTRA_BODY", "").strip()
     if not raw:
@@ -348,7 +350,7 @@ def _request_completion(
     image_data_url: str,
     prompt: str,
 ) -> str:
-    kwargs: dict[str, Any] = dict(
+    completion = client.chat.completions.create(
         model=config.model,
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -364,10 +366,11 @@ def _request_completion(
         top_p=config.top_p,
         max_tokens=config.max_tokens,
         stream=True,
+        # Thinking is disabled on every backend completion call in this repo;
+        # configured extras merge on top so a deployment can add to it or clear
+        # it for an endpoint that rejects the field.
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}, **config.extra_body},
     )
-    if config.extra_body:
-        kwargs["extra_body"] = config.extra_body
-    completion = client.chat.completions.create(**kwargs)
     return _collect_stream_text(completion).strip()
 
 

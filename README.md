@@ -43,6 +43,7 @@ A GenAI-powered catalog enrichment system that transforms basic product images i
 - **[Product Web Insights](docs/WEB_INSIGHTS.md)** - Proposed Deep Agents + Exa product research feature
 - **[Conflict Resolution](docs/FASHION_CONFLICT_RESOLUTION.md)** - How the fashion pipeline handles merchant data that is wrong, incomplete, or disagrees with the product image
 - **[Reviewed Decisions](docs/FASHION_DECISIONS.md)** - Recording human adjudications so catalog runs reproduce them
+- **[Single-Call Fashion Enrichment](docs/FASHION_SINGLE_CALL.md)** - Enriching one product with a single VLM call against any OpenAI-compatible endpoint
 - **[AI Agent Guidelines](AGENTS.md)** - Instructions for AI assistants working on this project
 
 ## Tech Stack
