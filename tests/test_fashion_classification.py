@@ -25,6 +25,8 @@ from backend.fashion.taxonomy import (
     ("Jewel Sequin Jumpsuit", "apparel.jumpsuits"),
     ("Vivacious Velvet Dress", "apparel.dresses"),
     ("Opulent Velvet Ballet Flats", "footwear.flats"),
+    # "espadrille" names a sole construction, not a product type.
+    ("Elegant Embroidered Espadrilles", None),
     ("Vintage Vignette Sunglasses", "eyewear.sunglasses"),
     # Two product types named at once cannot adjudicate between them.
     ("Woven Lace Blouse Sweater", None),
@@ -63,6 +65,9 @@ def test_column_verdict(subcategory, product_type, expected):
     # A real tie: the name says flats, the image says heels, and 'shoes'
     # covers both. No signal can break it, so a human must.
     ("Opulent Velvet Ballet Flats", "shoes", "footwear.heels", False, None),
+    # A heeled sandal is one product, so the name neither corroborates a
+    # specific type nor contradicts the classification.
+    ("Ocean Wave Espadrille Heels", "shoes", "footwear.sandals", True, None),
 ])
 def test_resolve_product_type(name, subcategory, product_type, publish, outlier):
     resolution = resolve_product_type(

@@ -275,6 +275,7 @@ def rebuild(
 
     # A single status per row, so a reviewer can flag what needs attention
     # without reconstructing it from several fields.
+    published_by_row = {record["source_row"]: record for record in catalog}
     for entry in ledger:
         changes: list[str] = []
         if entry["published"]:
@@ -289,6 +290,19 @@ def rebuild(
                     changes.append(
                         f"name {previous.get('name')!r} -> {entry.get('published_name')!r}"
                     )
+                # Compare the whole record, not just identity. Two runs of the same
+                # model produce different prose, so a row can be substantively
+                # different while its classification and name are untouched.
+                current = published_by_row.get(entry["source_row"], {})
+                content = sorted(
+                    field for field in (set(previous) | set(current)) - {"record_id"}
+                    if previous.get(field) != current.get(field)
+                    and field not in {"category", "subcategory", "name"}
+                )
+                if content:
+                    entry["changed_fields"] = ", ".join(content)
+                    changes.append(f"{len(content)} field(s) differ: {', '.join(content[:4])}"
+                                   + (" …" if len(content) > 4 else ""))
                 # Generated ids are content hashes over a changed field set, so
                 # they differ for every row. Tracking that as a per-row change
                 # would bury the substantive ones; it is reported once in the
@@ -323,7 +337,7 @@ def rebuild(
         "in_baseline", "gate_reasons",
         "source_category", "visual_classification", "classification", "name_signal",
         "name_verdict", "subcategory_verdict", "outlier", "resolved_by", "reviewer", "reason",
-        "reason_detail", "merchant_name", "corrected_name", "enrichment_run",
+        "reason_detail", "changed_fields", "merchant_name", "corrected_name", "enrichment_run",
     ]
     with (output_dir / "reconciliation.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=reconciliation_fields, extrasaction="ignore")
@@ -349,6 +363,7 @@ def rebuild(
     excluded: dict[str, int] = {}
     # A single status per row, so a reviewer can flag what needs attention
     # without reconstructing it from several fields.
+    published_by_row = {record["source_row"]: record for record in catalog}
     for entry in ledger:
         changes: list[str] = []
         if entry["published"]:
@@ -363,6 +378,19 @@ def rebuild(
                     changes.append(
                         f"name {previous.get('name')!r} -> {entry.get('published_name')!r}"
                     )
+                # Compare the whole record, not just identity. Two runs of the same
+                # model produce different prose, so a row can be substantively
+                # different while its classification and name are untouched.
+                current = published_by_row.get(entry["source_row"], {})
+                content = sorted(
+                    field for field in (set(previous) | set(current)) - {"record_id"}
+                    if previous.get(field) != current.get(field)
+                    and field not in {"category", "subcategory", "name"}
+                )
+                if content:
+                    entry["changed_fields"] = ", ".join(content)
+                    changes.append(f"{len(content)} field(s) differ: {', '.join(content[:4])}"
+                                   + (" …" if len(content) > 4 else ""))
                 # Generated ids are content hashes over a changed field set, so
                 # they differ for every row. Tracking that as a per-row change
                 # would bury the substantive ones; it is reported once in the

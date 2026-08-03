@@ -97,9 +97,11 @@ NAME_PRODUCT_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("dress", "apparel.dresses"),
     ("skirt", "apparel.skirts"),
     ("sunglasses", "eyewear.sunglasses"),
+    # "espadrille" is deliberately absent: it names a sole construction, not a
+    # product type, and appears on flats, wedges and sandals alike. A term that
+    # cannot pick one type must abstain rather than vote for a guess.
     ("boot", "footwear.boots"),
     ("sandal", "footwear.sandals"),
-    ("espadrille", "footwear.sandals"),
     ("flat", "footwear.flats"),
     ("heel", "footwear.heels"),
     ("pump", "footwear.heels"),
@@ -176,7 +178,12 @@ def name_verdict(name: str, product_type: str) -> str:
     signal = name_product_signal(name)
     if signal is None:
         return SILENT
-    return CORROBORATES if signal == product_type else CONTRADICTS
+    if signal == product_type:
+        return CORROBORATES
+    # A name citing a type that can describe the same product -- "Heeled Sandals"
+    # against footwear.sandals -- neither corroborates a specific type nor
+    # contradicts one, so it must not be counted as a disagreement.
+    return COMPATIBLE if types_compatible(signal, product_type) else CONTRADICTS
 
 
 def resolve_product_type(source: dict[str, Any], product_type: str) -> dict[str, Any]:
