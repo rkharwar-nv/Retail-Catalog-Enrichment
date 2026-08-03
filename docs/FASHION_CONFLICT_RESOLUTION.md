@@ -214,3 +214,24 @@ Some product types can legitimately describe one product, and those do not
 count as contradictions — a heeled sandal and a heeled boot are ordinary
 products, so a name mentioning a heel does not contradict `footwear/sandals`.
 A heeled flat is not, so that pair still raises the conflict.
+
+### Reviewing a rebuild
+
+Every ledger row carries a `status` and, where relevant, a `changes` field
+naming exactly what differs from the catalog in use:
+
+| status | meaning |
+|---|---|
+| `ADDED` | not present in the previous catalog |
+| `UPDATED` | published, but its classification or name changed |
+| `UNCHANGED` | published identically |
+| `DROPPED` | not published; `reason_detail` names the fix |
+
+Generated record ids are content hashes over the identity fields, so they change
+for every row whenever those fields change. That is counted once in the summary
+as `record_ids_changed` rather than flagged per row, where it would bury the
+substantive changes.
+
+`reconciliation.csv` holds everything that was contested, added, updated or
+dropped. `dropped_products.csv` holds the exclusions alone, each with a
+plain-language explanation and the fix required.

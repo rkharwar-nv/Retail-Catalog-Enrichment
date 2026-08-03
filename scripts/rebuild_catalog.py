@@ -130,9 +130,11 @@ def rebuild(
 
     # Optional comparison against the catalog currently in use, so the review
     # can show what actually changed rather than only what the gate contested.
+    baseline_records = None
     baseline_rows = None
     if baseline:
-        baseline_rows = {record["source_row"] for record in _read_jsonl(baseline)}
+        baseline_records = {record["source_row"]: record for record in _read_jsonl(baseline)}
+        baseline_rows = set(baseline_records)
 
     # Rows the gate contested. Everything else it already published, so the
     # classification tie-breaker does not apply -- it resolves disputes, it is
@@ -248,12 +250,41 @@ def rebuild(
         published["enriched_description"] = record["enriched_description"]
 
         catalog.append(published)
+        entry["published_name"] = published["name"]
         entry.update(
             published=True,
             classification=classification,
             enrichment_run=record.get("_enrichment_run"),
         )
         ledger.append(entry)
+
+    # A single status per row, so a reviewer can flag what needs attention
+    # without reconstructing it from several fields.
+    for entry in ledger:
+        changes: list[str] = []
+        if entry["published"]:
+            previous = (baseline_records or {}).get(entry["source_row"])
+            if previous is None:
+                entry["status"] = "ADDED" if baseline_records is not None else "PUBLISHED"
+            else:
+                was = f"{previous.get('category')}/{previous.get('subcategory')}"
+                if was != entry["classification"]:
+                    changes.append(f"classification {was} -> {entry['classification']}")
+                if previous.get("name") != entry.get("published_name"):
+                    changes.append(
+                        f"name {previous.get('name')!r} -> {entry.get('published_name')!r}"
+                    )
+                # Generated ids are content hashes over a changed field set, so
+                # they differ for every row. Tracking that as a per-row change
+                # would bury the substantive ones; it is reported once in the
+                # summary instead.
+                entry["record_id_changed"] = previous.get("record_id") != entry["record_id"]
+                entry["status"] = "UPDATED" if changes else "UNCHANGED"
+            if entry.get("outlier"):
+                changes.append(f"source {entry['outlier']} disagrees with published class")
+        else:
+            entry["status"] = "DROPPED"
+        entry["changes"] = "; ".join(changes)
 
     for entry in ledger:
         if not entry["published"]:
@@ -273,7 +304,8 @@ def rebuild(
     # A focused view of only the rows the gate contested. The full ledger is
     # mostly uncontested rows, which say nothing about how reconciliation works.
     reconciliation_fields = [
-        "source_row", "name", "record_id", "published", "in_baseline", "gate_reasons",
+        "source_row", "name", "status", "changes", "record_id", "record_id_changed", "published",
+        "in_baseline", "gate_reasons",
         "source_category", "visual_classification", "classification", "name_signal",
         "name_verdict", "subcategory_verdict", "outlier", "resolved_by", "reviewer", "reason",
         "reason_detail", "merchant_name", "corrected_name", "enrichment_run",
@@ -282,7 +314,7 @@ def rebuild(
         writer = csv.DictWriter(handle, fieldnames=reconciliation_fields, extrasaction="ignore")
         writer.writeheader()
         for entry in ledger:
-            if entry.get("contested") or entry.get("in_baseline") is False or not entry["published"]:
+            if entry["status"] in {"ADDED", "UPDATED", "DROPPED"} or entry.get("contested"):
                 row = dict(entry)
                 row["gate_reasons"] = ", ".join(entry.get("gate_reasons") or [])
                 writer.writerow(row)
@@ -291,7 +323,7 @@ def rebuild(
     with (output_dir / "dropped_products.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["source_row", "name", "record_id", "reason", "reason_detail",
+            fieldnames=["source_row", "name", "status", "record_id", "reason", "reason_detail",
                         "gate_reasons", "source_category", "in_baseline"],
             extrasaction="ignore",
         )
@@ -300,6 +332,34 @@ def rebuild(
             writer.writerow({**entry, "gate_reasons": ", ".join(entry.get("gate_reasons") or [])})
 
     excluded: dict[str, int] = {}
+    # A single status per row, so a reviewer can flag what needs attention
+    # without reconstructing it from several fields.
+    for entry in ledger:
+        changes: list[str] = []
+        if entry["published"]:
+            previous = (baseline_records or {}).get(entry["source_row"])
+            if previous is None:
+                entry["status"] = "ADDED" if baseline_records is not None else "PUBLISHED"
+            else:
+                was = f"{previous.get('category')}/{previous.get('subcategory')}"
+                if was != entry["classification"]:
+                    changes.append(f"classification {was} -> {entry['classification']}")
+                if previous.get("name") != entry.get("published_name"):
+                    changes.append(
+                        f"name {previous.get('name')!r} -> {entry.get('published_name')!r}"
+                    )
+                # Generated ids are content hashes over a changed field set, so
+                # they differ for every row. Tracking that as a per-row change
+                # would bury the substantive ones; it is reported once in the
+                # summary instead.
+                entry["record_id_changed"] = previous.get("record_id") != entry["record_id"]
+                entry["status"] = "UPDATED" if changes else "UNCHANGED"
+            if entry.get("outlier"):
+                changes.append(f"source {entry['outlier']} disagrees with published class")
+        else:
+            entry["status"] = "DROPPED"
+        entry["changes"] = "; ".join(changes)
+
     for entry in ledger:
         if not entry["published"]:
             excluded[entry["reason"]] = excluded.get(entry["reason"], 0) + 1
@@ -315,6 +375,15 @@ def rebuild(
         "published_with_outlier_signal": sum(bool(e.get("outlier")) for e in ledger),
     }
     if baseline_rows is not None:
+        summary["status_counts"] = {
+            status: sum(entry["status"] == status for entry in ledger)
+            for status in ("ADDED", "UPDATED", "UNCHANGED", "DROPPED")
+        }
+        summary["record_ids_changed"] = sum(bool(e.get("record_id_changed")) for e in ledger)
+        summary["updated_vs_baseline"] = [
+            {"source_row": e["source_row"], "name": e["name"], "changes": e["changes"]}
+            for e in ledger if e["status"] == "UPDATED"
+        ]
         summary["added_vs_baseline"] = sorted(
             e["source_row"] for e in ledger if e["published"] and not e["in_baseline"]
         )
