@@ -56,6 +56,34 @@ CLASSIFICATION_TO_TYPE = {
 }
 
 
+# Plain-language explanation for every way a row can fail to reach the catalog,
+# and what would have to happen for it to be published.
+DROP_EXPLANATIONS = {
+    "DUPLICATE_NAME_IMAGE": (
+        "Two or more rows are identical across name, image, price and description, so there is no "
+        "way to tell which is canonical. Fix: give each row a stable sku or product_id."
+    ),
+    "NO_FROZEN_ENRICHMENT": (
+        "No enrichment exists for this row in any of the supplied runs, so there is no description "
+        "or attributes to publish. Fix: resolve the underlying gate reason, then re-run enrichment."
+    ),
+    "UNMAPPABLE_CLASSIFICATION": (
+        "The enrichment run classified this row into a category outside the current taxonomy. "
+        "Fix: re-run enrichment against the current taxonomy version."
+    ),
+    "UNRESOLVED_PRODUCT_CLASSIFICATION": (
+        "The product name and the image identify different product types, and the subcategory "
+        "column is too coarse to break the tie. Fix: add a reviewed decision naming the correct "
+        "classification, or correct the source row."
+    ),
+    "NAME_CONTRADICTS_CLASSIFICATION": (
+        "The product name states a different product type than the category it was filed under, "
+        "which would show shoppers a name contradicting its own category and filters. "
+        "Fix: add a reviewed decision supplying a corrected name."
+    ),
+}
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -227,6 +255,13 @@ def rebuild(
         )
         ledger.append(entry)
 
+    for entry in ledger:
+        if not entry["published"]:
+            detail = DROP_EXPLANATIONS.get(entry["reason"], entry["reason"])
+            if entry["reason"] == "NO_FROZEN_ENRICHMENT" and entry["gate_reasons"]:
+                detail = f"{detail} Gate reason: {', '.join(entry['gate_reasons'])}."
+            entry["reason_detail"] = detail
+
     output_dir.mkdir(parents=True, exist_ok=True)
     with (output_dir / "enriched_products.jsonl").open("w", encoding="utf-8") as handle:
         for record in catalog:
@@ -241,7 +276,7 @@ def rebuild(
         "source_row", "name", "record_id", "published", "in_baseline", "gate_reasons",
         "source_category", "visual_classification", "classification", "name_signal",
         "name_verdict", "subcategory_verdict", "outlier", "resolved_by", "reviewer", "reason",
-        "merchant_name", "corrected_name", "enrichment_run",
+        "reason_detail", "merchant_name", "corrected_name", "enrichment_run",
     ]
     with (output_dir / "reconciliation.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=reconciliation_fields, extrasaction="ignore")
@@ -251,6 +286,18 @@ def rebuild(
                 row = dict(entry)
                 row["gate_reasons"] = ", ".join(entry.get("gate_reasons") or [])
                 writer.writerow(row)
+
+    dropped = [entry for entry in ledger if not entry["published"]]
+    with (output_dir / "dropped_products.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["source_row", "name", "record_id", "reason", "reason_detail",
+                        "gate_reasons", "source_category", "in_baseline"],
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        for entry in dropped:
+            writer.writerow({**entry, "gate_reasons": ", ".join(entry.get("gate_reasons") or [])})
 
     excluded: dict[str, int] = {}
     for entry in ledger:
