@@ -10,7 +10,7 @@ no other signal can break the tie, or two rows are indistinguishable. Those need
 a person. A decision file records those adjudications so a run **reproduces**
 them instead of re-litigating them.
 
-For the 218-row reference catalog this is a single row.
+For the 218-row reference catalog this is two rows.
 
 ## Running with decisions
 
@@ -52,11 +52,24 @@ Each subsequent line is one adjudication:
 | `rationale` | yes | Why — recorded in the run's decision ledger |
 | `classification` | no | `category/subcategory` override for the published record |
 | `record_id` | no | Stable id, used to distinguish otherwise-identical rows |
+| `name` | conditional | Corrected product name; **required** when resolving `NAME_CONTRADICTS_CLASSIFICATION` |
+
+When a decision supplies a `name`, the corrected name is published, the original
+is recorded here and in the run ledger rather than republished, and the merchant
+`description` is dropped because it describes the contradicted product type.
 
 ## What a reviewer may and may not resolve
 
-Only `UNRESOLVED_PRODUCT_CLASSIFICATION` and `DUPLICATE_NAME_IMAGE` are
-resolvable. Everything else stays a hard stop:
+Three reasons are resolvable:
+
+- `UNRESOLVED_PRODUCT_CLASSIFICATION` — signals disagree with no majority
+- `DUPLICATE_NAME_IMAGE` — rows indistinguishable, none canonical
+- `NAME_CONTRADICTS_CLASSIFICATION` — the name states a different product type
+  than the category. Resolving this **without** a corrected `name` is rejected
+  when the file loads, since publishing incoherent copy is what the rule exists
+  to prevent.
+
+Everything else stays a hard stop:
 
 - `IMAGE_NOT_FOUND` / `IMAGE_UNREADABLE` — no visual evidence to adjudicate
 - `MISSING_REQUIRED_FIELD` / `INVALID_PRICE` — the input row is invalid
@@ -111,5 +124,10 @@ when nothing contradicts it. The disagreeing signal is recorded in
 can be corrected. Only a genuine tie — one specific signal against the image,
 with no third signal able to break it — needs a decision entry.
 
+A decision is also needed when a published product's **name** states a different
+product type than its category, since that is incoherent to a shopper whatever
+the taxonomy says. See
+[Incoherent product copy](FASHION_CONFLICT_RESOLUTION.md#incoherent-product-copy).
+
 For the 218-row reference catalog this reduced the decision file from seven
-entries to one.
+entries to two, both of which were adjudicated against the product image.

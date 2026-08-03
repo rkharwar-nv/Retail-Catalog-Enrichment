@@ -5,16 +5,32 @@ exactly. This script instead replays enrichment that has already been produced
 and applies the *current* publication rules to it: three-signal classification,
 identity keyed on distinguishing fields, and reviewed decisions.
 
-That makes the output a pure function of three pinned inputs -- the source CSV,
-a frozen enrichment run, and the decision file -- so the same inputs always give
+That makes the output a pure function of its pinned inputs -- the source CSV, the
+frozen enrichment runs, and the decision file -- so the same inputs always give
 the same catalog, with no endpoint required.
+
+``--enrichment`` is repeatable and consulted in priority order, because no single
+run necessarily covers every row. ``--gate-run`` names the run whose
+``eliminated_products.jsonl`` says which rows were contested; the classification
+tie-breaker applies only to those, since it resolves disputes rather than acting
+as a second filter over rows that were never in dispute. ``--baseline`` is
+optional and marks each row ADDED, UPDATED, UNCHANGED or DROPPED against the
+catalog currently in use.
 
 Usage:
     PYTHONPATH=src python scripts/rebuild_catalog.py \
         --input-csv  shared/data/products_extended.csv \
-        --enrichment shared/output/fashion-enriched-full-20260713 \
+        --enrichment shared/output/<latest-run> \
+        --enrichment shared/output/<earlier-run> \
+        --gate-run   shared/output/<latest-run> \
         --decisions  shared/decisions/products_extended.jsonl \
+        --baseline   shared/data/enriched_products.jsonl \
         --output-dir data/catalog-recovery/run
+
+Outputs: enriched_products.jsonl (the catalog), rebuild_ledger.jsonl (every row),
+reconciliation.csv (contested, added, updated or dropped rows),
+dropped_products.csv (exclusions with the fix required), plus a summary and a
+manifest pinning every input hash.
 """
 
 import argparse
