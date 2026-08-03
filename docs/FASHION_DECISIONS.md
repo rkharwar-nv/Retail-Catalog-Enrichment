@@ -1,5 +1,8 @@
 # Reviewed Decisions
 
+For input shape, configuration, running and output, see the
+[Runbook](FASHION_RUNBOOK.md).
+
 Most conflicts are resolved from the data itself — see
 [Conflict Resolution and Poor Product Information](FASHION_CONFLICT_RESOLUTION.md)
 for how classification, attribute, and identity conflicts are settled without a

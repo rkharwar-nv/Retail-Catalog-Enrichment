@@ -1,5 +1,8 @@
 # Conflict Resolution and Poor Product Information
 
+For input shape, configuration, running and output, see the
+[Runbook](FASHION_RUNBOOK.md).
+
 How the fashion pipeline decides whether a product reaches the catalog when the
 merchant data is wrong, incomplete, or disagrees with the product image.
 
