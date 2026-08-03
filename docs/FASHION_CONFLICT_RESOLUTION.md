@@ -205,7 +205,8 @@ exists to prevent.
 When corrected copy is supplied:
 
 - the corrected `name` is published
-- the original is preserved as `merchant_name`
+- the original name is recorded in the decision ledger, not republished, so the
+  catalog keeps only fields the schema declares
 - the merchant `description` is **not** published, since it describes the
   contradicted product type; the enriched description already describes the
   product correctly

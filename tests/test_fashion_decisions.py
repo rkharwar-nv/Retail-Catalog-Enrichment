@@ -178,9 +178,9 @@ def test_decision_publishes_a_contested_row(tmp_path, monkeypatch):
     assert record["category"] == "footwear"
     assert record["subcategory"] == "heels"
 
-    # The merchant name is preserved but not published as the product name.
+    # The corrected name is published; the original lives in the ledger only.
     assert record["name"] == "Velvet Stiletto Pumps"
-    assert record["merchant_name"] == "Velvet Ballet Flats"
+    assert "merchant_name" not in record
     # The merchant description described flats, so it is not published either.
     assert record["description"] == ""
 

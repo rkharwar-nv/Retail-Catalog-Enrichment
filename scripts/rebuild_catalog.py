@@ -235,9 +235,8 @@ def rebuild(
         category, subcategory = classification.split("/", 1)
         published = {key: source.get(key, "") for key in SOURCE_FIELDS}
         if decision and decision.name:
-            # Keep the merchant's original for traceability, but do not publish a
-            # description that contradicts the corrected name.
-            published["merchant_name"] = published["name"]
+            # The original name is recorded in the ledger, not republished. Nor is
+            # the merchant description, which describes the contradicted type.
             published["name"] = decision.name
             published["description"] = ""
         published["category"] = category

@@ -326,9 +326,8 @@ def _catalog_record(
     if enriched_description:
         record["enriched_description"] = enriched_description
     if decision is not None and getattr(decision, "name", None):
-        # Keep the merchant's original for traceability, but do not publish a
-        # description that contradicts the corrected name.
-        record["merchant_name"] = record.get("name", "")
+        # The original name is recorded in the decision ledger, not republished.
+        # Nor is the merchant description, which describes the contradicted type.
         record["name"] = decision.name
         record["description"] = ""
     return record
