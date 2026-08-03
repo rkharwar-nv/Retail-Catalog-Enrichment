@@ -1,12 +1,16 @@
 # Reviewed Decisions
 
-The publication gate eliminates a row whenever the evidence is genuinely
-ambiguous — the merchant text disagrees with the image, two rows share an
-identity, or the image is missing. Those defaults are correct, but they leave
-real products out of the catalog until a human adjudicates them.
+Most conflicts are resolved from the data itself — see
+[Conflict Resolution and Poor Product Information](FASHION_CONFLICT_RESOLUTION.md)
+for how classification, attribute, and identity conflicts are settled without a
+human.
 
-A decision file records those adjudications so a run **reproduces** them instead
-of re-litigating them.
+What is left is genuine ambiguity: a specific signal contradicts the image and
+no other signal can break the tie, or two rows are indistinguishable. Those need
+a person. A decision file records those adjudications so a run **reproduces**
+them instead of re-litigating them.
+
+For the 218-row reference catalog this is a single row.
 
 ## Running with decisions
 
