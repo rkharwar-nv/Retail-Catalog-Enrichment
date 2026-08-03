@@ -68,6 +68,7 @@ def rebuild(
     gate_run: Path,
     decisions_path: Path | None,
     output_dir: Path,
+    baseline: Path | None = None,
 ) -> dict[str, Any]:
     input_sha = _sha256(input_csv)
 
@@ -97,13 +98,20 @@ def rebuild(
             if record.get("enriched_description") and record["source_row"] not in enriched:
                 enriched[record["source_row"]] = {**record, "_enrichment_run": directory.name}
 
+    # Optional comparison against the catalog currently in use, so the review
+    # can show what actually changed rather than only what the gate contested.
+    baseline_rows = None
+    if baseline:
+        baseline_rows = {record["source_row"] for record in _read_jsonl(baseline)}
+
     # Rows the gate contested. Everything else it already published, so the
     # classification tie-breaker does not apply -- it resolves disputes, it is
     # not a second filter over rows that were never in dispute.
-    contested = {
-        record["source_row"]
+    gate_reasons = {
+        record["source_row"]: record.get("elimination_reasons", [])
         for record in _read_jsonl(gate_run / "eliminated_products.jsonl")
     }
+    contested = set(gate_reasons)
 
     # Identity is ambiguous only when nothing distinguishes two rows.
     duplicate_counts: dict[tuple[str, ...], int] = {}
@@ -129,6 +137,12 @@ def rebuild(
             "reason": None,
             "classification": None,
             "resolved_by": None,
+            # Set up front so rows that exit early still appear in the
+            # reconciliation view.
+            "contested": source_row in contested,
+            "gate_reasons": sorted(gate_reasons.get(source_row, [])),
+            "source_category": f"{source.get('category', '')}/{source.get('subcategory', '')}",
+            "in_baseline": source_row in baseline_rows if baseline_rows is not None else None,
         }
 
         if duplicate_counts[_duplicate_key(source)] > 1:
@@ -150,6 +164,12 @@ def rebuild(
 
         classification = f"{record['category']}/{record['subcategory']}"
         resolution = resolve_product_type(source, product_type)
+        entry.update(
+            visual_classification=classification,
+            name_signal=resolution["name_signal"],
+            name_verdict=resolution["name_verdict"],
+            subcategory_verdict=resolution["column_verdict"],
+        )
         if source_row not in contested:
             entry["resolved_by"] = "uncontested"
         elif resolution["publish"]:
@@ -193,6 +213,23 @@ def rebuild(
         for entry in ledger:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    # A focused view of only the rows the gate contested. The full ledger is
+    # mostly uncontested rows, which say nothing about how reconciliation works.
+    reconciliation_fields = [
+        "source_row", "name", "record_id", "published", "in_baseline", "gate_reasons",
+        "source_category", "visual_classification", "classification", "name_signal",
+        "name_verdict", "subcategory_verdict", "outlier", "resolved_by", "reviewer", "reason",
+        "enrichment_run",
+    ]
+    with (output_dir / "reconciliation.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=reconciliation_fields, extrasaction="ignore")
+        writer.writeheader()
+        for entry in ledger:
+            if entry.get("contested") or entry.get("in_baseline") is False or not entry["published"]:
+                row = dict(entry)
+                row["gate_reasons"] = ", ".join(entry.get("gate_reasons") or [])
+                writer.writerow(row)
+
     excluded: dict[str, int] = {}
     for entry in ledger:
         if not entry["published"]:
@@ -208,6 +245,13 @@ def rebuild(
         "resolved_by_reviewed_decision": sum(e.get("resolved_by") == "reviewed_decision" for e in ledger),
         "published_with_outlier_signal": sum(bool(e.get("outlier")) for e in ledger),
     }
+    if baseline_rows is not None:
+        summary["added_vs_baseline"] = sorted(
+            e["source_row"] for e in ledger if e["published"] and not e["in_baseline"]
+        )
+        summary["dropped_vs_baseline"] = sorted(
+            e["source_row"] for e in ledger if not e["published"] and e["in_baseline"]
+        )
     (output_dir / "rebuild_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (output_dir / "rebuild_manifest.json").write_text(json.dumps({
         "input_csv": str(input_csv),
@@ -238,10 +282,15 @@ def main() -> None:
         help="Run whose eliminated_products.jsonl defines which rows were contested",
     )
     parser.add_argument("--decisions", type=Path)
+    parser.add_argument(
+        "--baseline", type=Path,
+        help="Catalog currently in use, to mark which rows are new or dropped",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(
-        rebuild(args.input_csv, args.enrichment, args.gate_run, args.decisions, args.output_dir),
+        rebuild(args.input_csv, args.enrichment, args.gate_run, args.decisions,
+                args.output_dir, args.baseline),
         indent=2,
     ))
 
