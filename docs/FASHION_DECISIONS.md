@@ -15,6 +15,11 @@ them instead of re-litigating them.
 
 For the 218-row reference catalog this is two rows.
 
+Decisions can be written by hand or captured with
+`scripts/review_decisions.py`, which walks the rows needing a call and records
+the answers. One decision per row: a row needing a second call has its existing
+decision extended rather than duplicated.
+
 ## Running with decisions
 
 ```bash

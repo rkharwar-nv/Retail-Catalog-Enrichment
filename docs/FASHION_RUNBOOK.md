@@ -249,6 +249,33 @@ in the source catalog.
 | `MISSING_REQUIRED_FIELD` / `INVALID_PRICE` | no | fix the source row |
 | `MODEL_ENRICHMENT_FAILED` | no | re-run; if it persists the record cannot be evidenced |
 
+### Guided review
+
+`scripts/review_decisions.py` walks the rows that need a call, shows the
+evidence for each, records what you decide, and rebuilds:
+
+```bash
+PYTHONPATH=src python scripts/review_decisions.py \
+  --input-csv   products.csv \
+  --enrichment  out/run-2 --enrichment out/run-1 \
+  --gate-run    out/run-2 \
+  --decisions   shared/decisions/products_extended.jsonl \
+  --output-dir  out/rebuild
+```
+
+Add `--list` to see what needs attention and change nothing. Skipping is always
+an option, and a skipped row is left exactly as it is.
+
+It keeps going until nothing new appears, because resolving one problem can
+surface another — naming a classification can leave the product name
+contradicting it. Rows that no decision can fix, such as a missing image, are
+reported separately with the fix required rather than prompted for.
+
+At the end it prints where the catalog, the reconciliation view, and the drop
+list are.
+
+### By hand
+
 To publish a held product, add one line to the decision file:
 
 ```json
