@@ -9,7 +9,7 @@ by running the pipeline against its own data.
 
 ## The run
 
-218 source rows in, **216 products published**, 2 held.
+218 source rows in, **215 products published**, 3 held.
 
 | | |
 |---|---:|

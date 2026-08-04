@@ -55,6 +55,7 @@ class Decision:
     record_id: str | None = None
     name: str | None = None
     attributes: dict[str, Any] = field(default_factory=dict)
+    exclude: bool = False
 
     def resolves_reason(self, reason: str) -> bool:
         return reason in self.resolves
@@ -142,6 +143,12 @@ def load_decisions(path: Path) -> DecisionRegistry:
                 "supplies no corrected 'name'. Publishing a product whose name contradicts its "
                 "own category leaves the catalog incoherent, so the corrected name is required."
             )
+        exclude = bool(payload.get("exclude", False))
+        if exclude and (payload.get("classification") or payload.get("name") or payload.get("attributes")):
+            raise DecisionError(
+                f"Decision for row {source_row} excludes the row and also sets a published value. "
+                "Excluding and correcting are different intents; use one or the other."
+            )
         attributes = payload.get("attributes") or {}
         if not isinstance(attributes, dict):
             raise DecisionError(f"Decision for row {source_row}: 'attributes' must be an object.")
@@ -166,6 +173,7 @@ def load_decisions(path: Path) -> DecisionRegistry:
             record_id=payload.get("record_id"),
             name=payload.get("name"),
             attributes=attributes,
+            exclude=exclude,
         )
     return registry
 

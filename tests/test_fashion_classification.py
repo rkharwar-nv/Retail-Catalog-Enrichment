@@ -173,3 +173,8 @@ def test_color_mismatch_reports_both_values():
     result = color_mismatch("Sleek Stiletto Heels in Navy", "black")
     assert result["name_color"] == "navy"
     assert result["primary_color"] == "black"
+
+
+def test_espadrille_flat_is_not_a_sandal():
+    """A closed-upper espadrille is a flat; the name must not vote for sandals."""
+    assert name_product_signal("Elegant Embroidered Espadrilles") is None

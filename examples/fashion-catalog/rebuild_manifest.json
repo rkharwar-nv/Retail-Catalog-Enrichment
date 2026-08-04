@@ -8,11 +8,11 @@
   ],
   "gate_run": "/home/ubuntu/retail-shopping-assistant/shared/output/fashion-enriched-authoritative-v3-20260714",
   "decisions_path": "shared/decisions/products_extended.jsonl",
-  "decisions_sha256": "309a8ce866329510497b177fc63ae9966bcfd8d6ea1694548ccf0aa69d30eeda",
+  "decisions_sha256": "76f321d85ef02baf216ebab46759445c607f2034005605452f36ebfc1317af10",
   "decisions_version": "fashion-decisions/0.1",
   "taxonomy_version": "fashion-product-types/0.1",
   "attribute_version": "fashion-attributes/0.1",
   "publication_policy_version": "fashion-publication/0.4",
   "enrichment_source": "replayed from a frozen run; no model calls were made",
-  "created_at": "2026-08-04T02:43:26.067486+00:00"
+  "created_at": "2026-08-04T02:50:51.614769+00:00"
 }

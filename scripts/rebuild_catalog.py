@@ -93,6 +93,9 @@ DROP_EXPLANATIONS = {
         "column is too coarse to break the tie. Fix: add a reviewed decision naming the correct "
         "classification, or correct the source row."
     ),
+    "REVIEWER_EXCLUDED": (
+        "A reviewer removed this row from the catalog. The decision file names who and why."
+    ),
     "NAME_CONTRADICTS_CLASSIFICATION": (
         "The product name states a different product type than the category it was filed under, "
         "which would show shoppers a name contradicting its own category and filters. "
@@ -194,6 +197,12 @@ def rebuild(
             "in_baseline": source_row in baseline_rows if baseline_rows is not None else None,
         }
 
+        if decision and decision.exclude:
+            entry["reason"] = "REVIEWER_EXCLUDED"
+            entry["reviewer"] = decision.reviewer
+            ledger.append(entry)
+            continue
+
         if duplicate_counts[_duplicate_key(source)] > 1:
             entry["reason"] = "DUPLICATE_NAME_IMAGE"
             ledger.append(entry)
@@ -228,12 +237,20 @@ def rebuild(
         elif decision and decision.resolves_reason("UNRESOLVED_PRODUCT_CLASSIFICATION"):
             entry["resolved_by"] = "reviewed_decision"
             entry["reviewer"] = decision.reviewer
-            if decision.classification:
-                classification = decision.classification
         else:
             entry["reason"] = "UNRESOLVED_PRODUCT_CLASSIFICATION"
             ledger.append(entry)
             continue
+
+        if decision and decision.classification:
+            # An explicit classification wins regardless of whether the gate
+            # contested the row; a reviewer who names one has looked at it.
+            if classification != decision.classification:
+                entry["classification_override"] = (
+                    f"{classification} -> {decision.classification}"
+                )
+            classification = decision.classification
+            entry["reviewer"] = decision.reviewer
 
         # A product whose own name names a different product type than the one it
         # is filed under is incoherent to a shopper, however sound the taxonomy.
@@ -355,7 +372,8 @@ def rebuild(
         "in_baseline", "gate_reasons",
         "source_category", "visual_classification", "classification", "name_signal",
         "name_verdict", "subcategory_verdict", "outlier", "resolved_by", "reviewer", "reason",
-        "reason_detail", "color_flag", "color_flag_confidence", "attribute_overrides",
+        "reason_detail", "color_flag", "color_flag_confidence", "classification_override",
+        "attribute_overrides",
         "changed_fields",
         "merchant_name", "corrected_name", "enrichment_run",
     ]
@@ -371,6 +389,7 @@ def rebuild(
                 or entry.get("contested")
                 or entry.get("color_flag")
                 or entry.get("attribute_overrides")
+                or entry.get("classification_override")
                 or entry.get("resolved_by") == "reviewed_decision"
                 or "classification " in (entry["changes"] or "")
                 or "name " in (entry["changes"] or "")

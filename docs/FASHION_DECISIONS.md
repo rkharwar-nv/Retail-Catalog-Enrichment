@@ -57,6 +57,7 @@ Each subsequent line is one adjudication:
 | `record_id` | no | Stable id, used to distinguish otherwise-identical rows |
 | `name` | conditional | Corrected product name; **required** when resolving `NAME_CONTRADICTS_CLASSIFICATION` |
 | `attributes` | no | Attribute values to correct, e.g. `{"primary_color": "brown"}` |
+| `exclude` | no | `true` removes the row from the catalog |
 
 When a decision supplies a `name`, the corrected name is published, the original
 is recorded here and in the run ledger rather than republished, and the merchant
@@ -77,6 +78,26 @@ Values are checked against the attribute's enum when it has one, so a typo or an
 off-taxonomy value fails at load time rather than reaching the catalog. The
 override is recorded in the run ledger, so a corrected value always has a named
 author and a reason.
+
+### Removing a row
+
+`exclude` takes a row out of the catalog with the reason `REVIEWER_EXCLUDED`:
+
+```json
+{"source_row": 30, "resolves": [], "exclude": true,
+ "reviewer": "you@example.com",
+ "rationale": "Duplicate listing sharing one image with row 38 at a different price."}
+```
+
+A decision may exclude a row **or** correct one, not both — those are different
+intents, and a file trying to do both is rejected at load time.
+
+### Overriding a classification outright
+
+A `classification` applies whether or not the gate contested the row. A reviewer
+who names one has looked at the product, so it wins over what enrichment
+concluded, and the change is recorded as `classification_override` in the run
+ledger.
 
 ## What a reviewer may and may not resolve
 

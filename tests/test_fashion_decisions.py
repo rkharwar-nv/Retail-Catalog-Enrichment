@@ -363,3 +363,28 @@ def test_attributes_must_be_an_object(tmp_path):
     )
     with pytest.raises(DecisionError, match="must be an object"):
         load_decisions(path)
+
+
+def test_exclude_and_correct_are_mutually_exclusive(tmp_path):
+    """Removing a row and correcting one are different intents."""
+    csv_path = _write_csv(tmp_path)
+    path = _write_decisions(
+        tmp_path, _sha(csv_path),
+        {"source_row": 2, "resolves": [], "exclude": True,
+         "classification": "footwear/heels",
+         "reviewer": "reviewer@example.com", "rationale": "..."},
+    )
+    with pytest.raises(DecisionError, match="different intents"):
+        load_decisions(path)
+
+
+def test_exclude_is_read(tmp_path):
+    csv_path = _write_csv(tmp_path)
+    path = _write_decisions(
+        tmp_path, _sha(csv_path),
+        {"source_row": 2, "resolves": [], "exclude": True,
+         "reviewer": "reviewer@example.com", "rationale": "Duplicate of another row."},
+    )
+    decision = load_decisions(path).for_row(2)
+    assert decision.exclude is True
+    assert decision.classification is None
