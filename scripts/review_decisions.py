@@ -85,17 +85,59 @@ def _ask_rationale() -> str | None:
         print("  A rationale is required; it is what makes the decision auditable.")
 
 
-def _needs_attention(ledger: list[dict[str, Any]]) -> tuple[list, list, list]:
-    """Split the ledger into rows to adjudicate, rows to report, and flags."""
-    adjudicate, blocked, flagged = [], [], []
+def _needs_attention(
+    ledger: list[dict[str, Any]], catalog: dict[int, dict[str, Any]],
+) -> tuple[list, list]:
+    """Every finding a person can act on, and every one they cannot.
+
+    A held row is the obvious case, but a published product can need a call too:
+    a colour that no filter will match, a classification that moved against the
+    previous catalog, or two products a shopper cannot tell apart.
+    """
+    findings, blocked = [], []
+    published_names: dict[str, list[int]] = {}
     for entry in ledger:
+        if entry["published"]:
+            published_names.setdefault(entry["name"], []).append(entry["source_row"])
+
+    for entry in ledger:
+        row = entry["source_row"]
         if entry.get("reason") == "REVIEWER_EXCLUDED":
             continue
         if not entry["published"]:
-            (adjudicate if entry.get("reason") in ACTIONABLE else blocked).append(entry)
-        elif entry.get("color_flag_confidence") == "high":
-            flagged.append(entry)
-    return adjudicate, blocked, flagged
+            if entry.get("reason") in ACTIONABLE:
+                findings.append({"kind": entry["reason"], "entry": entry,
+                                 "detail": entry.get("reason_detail", "")})
+            else:
+                blocked.append(entry)
+            continue
+
+        record = catalog.get(row, {})
+        if entry.get("color_flag"):
+            findings.append({
+                "kind": "COLOR_FLAG", "entry": entry,
+                "detail": f"{entry['color_flag']} [{entry.get('color_flag_confidence')} confidence]",
+            })
+        elif record.get("primary_color") in (None, "", "other"):
+            # A filterable field with no usable value: the product appears in no
+            # colour filter, exactly as if the field were missing.
+            findings.append({
+                "kind": "UNFILTERABLE_COLOR", "entry": entry,
+                "detail": (f"primary_color is {record.get('primary_color')!r}, so this product "
+                           "matches no colour filter."),
+            })
+        if "classification " in (entry.get("changes") or ""):
+            findings.append({
+                "kind": "RECLASSIFIED", "entry": entry,
+                "detail": entry["changes"].split(";")[0],
+            })
+        if len(published_names.get(entry["name"], [])) > 1:
+            others = [r for r in published_names[entry["name"]] if r != row]
+            findings.append({
+                "kind": "DUPLICATE_PUBLISHED_NAME", "entry": entry,
+                "detail": f"shares its name with row(s) {others}, which shoppers cannot tell apart",
+            })
+    return findings, blocked
 
 
 def _write_decision(path: Path, decision: dict[str, Any]) -> None:
@@ -125,43 +167,49 @@ def _write_decision(path: Path, decision: dict[str, Any]) -> None:
     )
 
 
-def _key(entry: dict[str, Any]) -> tuple[int, str]:
-    """Identify a problem, not just a row."""
-    return entry["source_row"], entry.get("reason") or "color_flag"
+def _key(finding: dict[str, Any]) -> tuple[int, str]:
+    """Identify a problem, not just a row: one row can have several."""
+    return finding["entry"]["source_row"], finding["kind"]
 
 
-def _show(entry: dict[str, Any]) -> None:
+def _show(finding: dict[str, Any]) -> None:
+    entry = finding["entry"]
     print(f"\n{_hr()}")
-    print(f"{BOLD}row {entry['source_row']} · {entry['name']}{RESET}")
+    print(f"{BOLD}row {entry['source_row']} · {entry['name']}{RESET}  {DIM}{finding['kind']}{RESET}")
     print(f"  merchant category : {entry.get('source_category') or '—'}")
     if entry.get("visual_classification"):
         print(f"  image says        : {entry['visual_classification']}")
     if entry.get("name_signal"):
         print(f"  name implies      : {entry['name_signal']}")
-    if entry.get("reason_detail"):
-        print(f"  {DIM}{entry['reason_detail']}{RESET}")
-    if entry.get("color_flag"):
-        print(f"  colour            : {entry['color_flag']}")
+    if finding.get("detail"):
+        print(f"  {DIM}{finding['detail']}{RESET}")
 
 
-def _decide(entry: dict[str, Any], reviewer: str) -> dict[str, Any] | None:
-    """Ask what to do about one row. Returns a decision payload or None."""
-    reason = entry.get("reason")
-    row = entry["source_row"]
+def _decide(finding: dict[str, Any], reviewer: str) -> dict[str, Any] | None:
+    """Ask what to do about one finding. Returns a decision payload or None."""
+    entry = finding["entry"]
+    kind, row = finding["kind"], entry["source_row"]
+    colors = sorted(ATTRIBUTE_VALUES["primary_color"])
 
-    if entry.get("color_flag_confidence") == "high":
-        choice = _prompt("The name states a colour the record denies.", [
-            ("color", "correct primary_color"),
+    if kind in {"COLOR_FLAG", "UNFILTERABLE_COLOR"}:
+        question = ("The name states a colour the record denies."
+                    if kind == "COLOR_FLAG" else
+                    "No colour filter will match this product.")
+        choice = _prompt(question, [
+            ("color", "set primary_color"),
             ("exclude", "remove this product from the catalog"),
         ])
         if choice == "color":
-            value = _ask_value("primary_color", sorted(ATTRIBUTE_VALUES["primary_color"]))
+            value = _ask_value("primary_color", colors)
             if value is None:
                 return None
             return {"source_row": row, "resolves": [], "attributes": {"primary_color": value},
                     "reviewer": reviewer, "rationale": _ask_rationale()}
-    elif reason == "UNRESOLVED_PRODUCT_CLASSIFICATION":
-        choice = _prompt("Which classification is right?", [
+
+    elif kind in {"UNRESOLVED_PRODUCT_CLASSIFICATION", "RECLASSIFIED"}:
+        question = ("Which classification is right?" if kind == "UNRESOLVED_PRODUCT_CLASSIFICATION"
+                    else "This classification changed against the previous catalog. Keep it?")
+        choice = _prompt(question, [
             ("classify", "name the classification to publish under"),
             ("exclude", "remove this product from the catalog"),
         ])
@@ -169,10 +217,12 @@ def _decide(entry: dict[str, Any], reviewer: str) -> dict[str, Any] | None:
             value = _ask_value("category/subcategory", CLASSIFICATIONS)
             if value is None:
                 return None
-            return {"source_row": row, "resolves": ["UNRESOLVED_PRODUCT_CLASSIFICATION"],
-                    "classification": value, "reviewer": reviewer,
-                    "rationale": _ask_rationale()}
-    elif reason == "NAME_CONTRADICTS_CLASSIFICATION":
+            resolves = (["UNRESOLVED_PRODUCT_CLASSIFICATION"]
+                        if kind == "UNRESOLVED_PRODUCT_CLASSIFICATION" else [])
+            return {"source_row": row, "resolves": resolves, "classification": value,
+                    "reviewer": reviewer, "rationale": _ask_rationale()}
+
+    elif kind == "NAME_CONTRADICTS_CLASSIFICATION":
         choice = _prompt("The name contradicts the category it was filed under.", [
             ("rename", "supply a corrected product name"),
             ("exclude", "remove this product from the catalog"),
@@ -183,7 +233,20 @@ def _decide(entry: dict[str, Any], reviewer: str) -> dict[str, Any] | None:
                 return None
             return {"source_row": row, "resolves": ["NAME_CONTRADICTS_CLASSIFICATION"],
                     "name": value, "reviewer": reviewer, "rationale": _ask_rationale()}
-    elif reason == "DUPLICATE_NAME_IMAGE":
+
+    elif kind == "DUPLICATE_PUBLISHED_NAME":
+        choice = _prompt("Two published products share this name.", [
+            ("rename", "give this one a distinct name"),
+            ("exclude", "remove this one and keep the other"),
+        ])
+        if choice == "rename":
+            value = _ask_value("distinct name", None)
+            if value is None:
+                return None
+            return {"source_row": row, "resolves": [], "name": value,
+                    "reviewer": reviewer, "rationale": _ask_rationale()}
+
+    elif kind == "DUPLICATE_NAME_IMAGE":
         choice = _prompt("These rows cannot be told apart.", [
             ("exclude", "remove this row and keep the other"),
         ])
@@ -210,9 +273,16 @@ def main() -> None:
 
     summary = rebuild(args.input_csv, args.enrichment, args.gate_run,
                       args.decisions, args.output_dir, args.baseline)
-    ledger = [json.loads(line) for line in
-              (args.output_dir / "rebuild_ledger.jsonl").read_text().splitlines() if line.strip()]
-    adjudicate, blocked, flagged = _needs_attention(ledger)
+    def _load() -> tuple[list, list]:
+        ledger = [json.loads(line) for line in
+                  (args.output_dir / "rebuild_ledger.jsonl").read_text().splitlines()
+                  if line.strip()]
+        catalog = {json.loads(line)["source_row"]: json.loads(line) for line in
+                   (args.output_dir / "enriched_products.jsonl").read_text().splitlines()
+                   if line.strip()}
+        return _needs_attention(ledger, catalog)
+
+    findings, blocked = _load()
 
     print(f"\n{_hr('═')}")
     print(f"{BOLD}{summary['published']} of {summary['source_rows']} products published{RESET}")
@@ -222,7 +292,7 @@ def main() -> None:
         for entry in blocked:
             print(f"  row {entry['source_row']:>4} {entry['name'][:38]:40} {entry['reason']}")
             print(f"       {DIM}{entry.get('reason_detail', '')[:150]}{RESET}")
-    items = flagged + adjudicate
+    items = findings
     if not items:
         print("\nNothing needs a decision.")
     else:
@@ -230,9 +300,10 @@ def main() -> None:
               f"{': ' if args.list else ''}")
 
     if args.list:
-        for entry in items:
-            print(f"  row {entry['source_row']:>4} {entry['name'][:38]:40} "
-                  f"{entry.get('reason') or entry.get('color_flag', '')}")
+        for finding in items:
+            entry = finding["entry"]
+            print(f"  row {entry['source_row']:>4} {entry['name'][:34]:36} "
+                  f"{finding['kind']:32} {finding['detail'][:60]}")
         print(f"\nCatalog as it stands: {args.output_dir / 'enriched_products.jsonl'}")
         return
 
@@ -246,10 +317,10 @@ def main() -> None:
     # nothing new appears rather than stopping with the row still held.
     while items:
         recorded = 0
-        for entry in items:
-            _show(entry)
-            decision = _decide(entry, reviewer)
-            seen.add(_key(entry))
+        for finding in items:
+            _show(finding)
+            decision = _decide(finding, reviewer)
+            seen.add(_key(finding))
             if decision:
                 _write_decision(args.decisions, decision)
                 recorded += 1
@@ -262,11 +333,8 @@ def main() -> None:
 
         summary = rebuild(args.input_csv, args.enrichment, args.gate_run,
                           args.decisions, args.output_dir, args.baseline)
-        ledger = [json.loads(line) for line in
-                  (args.output_dir / "rebuild_ledger.jsonl").read_text().splitlines()
-                  if line.strip()]
-        adjudicate, blocked, flagged = _needs_attention(ledger)
-        items = [e for e in flagged + adjudicate if _key(e) not in seen]
+        findings, blocked = _load()
+        items = [f for f in findings if _key(f) not in seen]
         if items:
             print(f"\n{DIM}Resolving those surfaced {len(items)} more:{RESET}")
 

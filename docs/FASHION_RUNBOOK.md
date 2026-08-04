@@ -266,6 +266,18 @@ PYTHONPATH=src python scripts/review_decisions.py \
 Add `--list` to see what needs attention and change nothing. Skipping is always
 an option, and a skipped row is left exactly as it is.
 
+It surfaces more than the held rows. A published product can need a call too:
+
+| Finding | Meaning |
+|---|---|
+| `UNRESOLVED_PRODUCT_CLASSIFICATION` | the name and the image identify different products |
+| `NAME_CONTRADICTS_CLASSIFICATION` | the name states a different product type than its category |
+| `DUPLICATE_NAME_IMAGE` | rows are indistinguishable, so none is canonical |
+| `COLOR_FLAG` | the name states a colour the record denies |
+| `UNFILTERABLE_COLOR` | `primary_color` is absent or `other`, so no colour filter matches |
+| `RECLASSIFIED` | the classification moved against the previous catalog |
+| `DUPLICATE_PUBLISHED_NAME` | two published products share a name |
+
 It keeps going until nothing new appears, because resolving one problem can
 surface another — naming a classification can leave the product name
 contradicting it. Rows that no decision can fix, such as a missing image, are
