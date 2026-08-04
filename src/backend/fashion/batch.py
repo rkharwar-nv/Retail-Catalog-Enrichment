@@ -20,6 +20,7 @@ from backend.fashion.taxonomy import (
     CORROBORATES,
     PRODUCT_ATTRIBUTES,
     TAXONOMY_VERSION,
+    color_mismatch,
     name_product_signal,
     resolve_product_type,
     types_compatible,
@@ -223,6 +224,40 @@ def _review_rows(record_id: str, row_number: int, source: dict[str, Any], result
             "attention_reason": "Earlier model output rejected: " + "; ".join(retry_corrections),
             "decision": "published_after_model_retry",
             "decision_reason": "The invalid model output was discarded. A later response passed schema, taxonomy, applicability, and evidence validation, so the product was published.",
+        })
+    return rows
+
+
+def _color_mismatch_review_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flag published products whose name states a colour the record denies.
+
+    This flags rather than holds. A colour word in a name is weaker evidence than
+    a product-type noun -- it may describe a trim, a lens, or one colour of a
+    multicoloured item -- so the product still publishes and a human decides.
+    """
+    rows = []
+    for record in records:
+        mismatch = color_mismatch(record.get("name", ""), record.get("primary_color"))
+        if not mismatch:
+            continue
+        confidence = "high" if mismatch["unambiguous"] else "low"
+        rows.append({
+            "record_id": record.get("record_id", ""), "source_row": record.get("source_row", ""),
+            "product_name": record.get("name", ""), "field": "primary_color",
+            "original_value": mismatch["name_color"], "enriched_value": mismatch["primary_color"],
+            "confidence": confidence, "provenance": "source_text", "status": "review",
+            "attention_reason": (
+                f"The product name states {mismatch['name_color']!r} but the published "
+                f"primary_color is {mismatch['primary_color']!r}."
+            ),
+            "decision": "published_with_color_mismatch",
+            "decision_reason": (
+                "The name places the colour where it can only describe the product, so one of "
+                "the two is wrong and primary_color is a filterable field."
+                if mismatch["unambiguous"] else
+                "The colour word may describe a trim or component rather than the product, or "
+                "may be branding, so this is reported for confirmation rather than correction."
+            ),
         })
     return rows
 
@@ -508,6 +543,8 @@ def run_batch(
         with (output_dir / "eliminated_products.jsonl").open("w", encoding="utf-8") as handle:
             for record in eliminated_records:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    review_rows.extend(_color_mismatch_review_rows(catalog_records))
+
     if decision_ledger:
         with (output_dir / "decision_ledger.jsonl").open("w", encoding="utf-8") as handle:
             for entry in decision_ledger:

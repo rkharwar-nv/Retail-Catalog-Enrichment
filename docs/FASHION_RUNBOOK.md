@@ -226,6 +226,11 @@ as `content_only_changes`. Generated `record_id`s change whenever identity
 fields change, so that is reported once as `record_ids_changed` rather than
 flagged per row.
 
+A `color_flag` column means the product's name states a colour that its
+`primary_color` denies. These publish; `color_flag_confidence` is `high` when
+the name puts the colour where it can only describe the product, and `low` when
+it may name a component or be branding.
+
 An `outlier` column means the product published despite one merchant signal
 disagreeing. The classification is sound; the named signal should be corrected
 in the source catalog.

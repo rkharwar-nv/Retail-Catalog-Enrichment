@@ -12,6 +12,7 @@ from backend.fashion.taxonomy import (
     CONTRADICTS,
     CORROBORATES,
     SILENT,
+    color_mismatch,
     column_verdict,
     name_product_signal,
     neutralize_attributes,
@@ -137,3 +138,38 @@ def test_neutralizing_drops_related_conflicts():
     neutralize_attributes(result, ["composition"])
 
     assert [item["field"] for item in result["conflicts"]] == ["pattern"]
+
+
+# --------------------------------------------------------------------------- #
+# Colour mismatch between the merchant name and the published colour
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("name,primary_color,flagged,unambiguous", [
+    # The name puts the colour where it can only describe the product.
+    ("Sleek Stiletto Heels in Navy", "black", True, True),
+    ("Felicity Flats in Navy", "navy", False, False),
+    # Present but not positionally certain: may name a component or be branding.
+    ("Navy Gradient Sunglasses", "black", True, False),
+    ("Black Velvet Ankle Boots", "black", False, False),
+    # Colour words that double as personal names only count in the "in X" slot.
+    ("Jade Luxe Sunglasses", "gold", False, False),
+    ("Aria Amber Aviator Sunglasses", "brown", False, False),
+    ("Coral Silk Maxi Dress", "pink", False, False),
+    # Shades resolve to their enum value rather than reading as a conflict.
+    ("Ivory Satin Sheath Dress", "white", False, False),
+    ("Burgundy Wrap Dress", "red", False, False),
+    # A name citing one colour of a multicoloured product is not wrong.
+    ("Kaleidoscope Print Midi Skirt in Red", "multicolor", False, False),
+    # Nothing to compare against.
+    ("Sleek Stiletto Heels in Navy", None, False, False),
+])
+def test_color_mismatch(name, primary_color, flagged, unambiguous):
+    result = color_mismatch(name, primary_color)
+    assert (result is not None) is flagged
+    if flagged:
+        assert result["unambiguous"] is unambiguous
+
+
+def test_color_mismatch_reports_both_values():
+    result = color_mismatch("Sleek Stiletto Heels in Navy", "black")
+    assert result["name_color"] == "navy"
+    assert result["primary_color"] == "black"

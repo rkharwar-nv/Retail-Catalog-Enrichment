@@ -51,6 +51,7 @@ from backend.fashion.taxonomy import (
     ATTRIBUTE_VERSION,
     PRODUCT_ATTRIBUTES,
     TAXONOMY_VERSION,
+    color_mismatch,
     name_product_signal,
     resolve_product_type,
     types_compatible,
@@ -266,6 +267,16 @@ def rebuild(
 
         catalog.append(published)
         entry["published_name"] = published["name"]
+        # Flagged, not held: a colour word in a name is weaker evidence than a
+        # product noun and may describe a trim or a component.
+        mismatch = color_mismatch(published["name"], published.get("primary_color"))
+        if mismatch:
+            entry["color_flag"] = (
+                f"name says {mismatch['name_color']}, primary_color is "
+                f"{mismatch['primary_color']}"
+                + ("" if mismatch["unambiguous"] else " (may be branding or a component)")
+            )
+            entry["color_flag_confidence"] = "high" if mismatch["unambiguous"] else "low"
         entry.update(
             published=True,
             classification=classification,
@@ -337,7 +348,8 @@ def rebuild(
         "in_baseline", "gate_reasons",
         "source_category", "visual_classification", "classification", "name_signal",
         "name_verdict", "subcategory_verdict", "outlier", "resolved_by", "reviewer", "reason",
-        "reason_detail", "changed_fields", "merchant_name", "corrected_name", "enrichment_run",
+        "reason_detail", "color_flag", "color_flag_confidence", "changed_fields",
+        "merchant_name", "corrected_name", "enrichment_run",
     ]
     with (output_dir / "reconciliation.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=reconciliation_fields, extrasaction="ignore")
@@ -349,6 +361,7 @@ def rebuild(
             substantive = (
                 entry["status"] in {"ADDED", "DROPPED"}
                 or entry.get("contested")
+                or entry.get("color_flag")
                 or "classification " in (entry["changes"] or "")
                 or "name " in (entry["changes"] or "")
             )
@@ -441,6 +454,14 @@ def rebuild(
         # Every other UPDATED row differs only in enriched prose or attributes,
         # which is expected when the enrichment source run changes. Per-row
         # detail is in rebuild_ledger.jsonl.
+        summary["color_mismatches"] = {
+            "high_confidence": sum(
+                1 for e in ledger if e.get("color_flag_confidence") == "high"
+            ),
+            "low_confidence": sum(
+                1 for e in ledger if e.get("color_flag_confidence") == "low"
+            ),
+        }
         summary["content_only_changes"] = sum(
             1 for e in ledger
             if e["status"] == "UPDATED"

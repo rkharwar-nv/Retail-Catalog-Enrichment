@@ -1,5 +1,7 @@
 """Small, versioned taxonomy used by fashion enrichment."""
 
+import re
+
 from typing import Any, Iterable
 
 TAXONOMY_VERSION = "fashion-product-types/0.1"
@@ -117,6 +119,75 @@ NAME_PRODUCT_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("necklace", "jewelry.necklaces"),
     ("watch", "jewelry.watches"),
 )
+
+# Colour words that appear in merchant names, mapped to the primary_color enum.
+# Shades map to the enum value they belong to; "navy" stays distinct from "blue"
+# because the enum keeps them apart.
+NAME_COLOR_KEYWORDS: dict[str, str] = {
+    "black": "black", "white": "white", "ivory": "white", "cream": "white",
+    "gray": "gray", "grey": "gray", "charcoal": "gray",
+    "silver": "silver", "gold": "gold", "rose gold": "gold",
+    "brown": "brown", "cognac": "brown", "chocolate": "brown", "mocha": "brown",
+    "beige": "beige", "tan": "beige", "camel": "beige", "nude": "beige",
+    "red": "red", "burgundy": "red", "merlot": "red", "wine": "red", "crimson": "red",
+    "orange": "orange", "coral": "orange", "rust": "orange",
+    "yellow": "yellow", "mustard": "yellow", "amber": "yellow",
+    "green": "green", "olive": "green", "emerald": "green", "mint": "green", "jade": "green",
+    "blue": "blue", "teal": "blue", "turquoise": "blue", "cobalt": "blue",
+    "navy": "navy",
+    "purple": "purple", "lavender": "purple", "violet": "purple", "plum": "purple",
+    "pink": "pink", "blush": "pink", "rose": "pink", "fuchsia": "pink",
+}
+
+# Colour words that double as personal or brand names. In a merchant name these
+# are as likely to be branding as description -- "Jade Luxe Sunglasses",
+# "Aria Amber Aviator" -- so they only count when the name puts them in a
+# position that can only be a colour, such as "Flats in Navy".
+AMBIGUOUS_COLOR_WORDS = frozenset({
+    "amber", "coral", "jade", "olive", "rose", "violet", "hazel", "ruby",
+    "emerald", "mint", "plum", "sage", "wine",
+})
+
+
+def name_color_signal(name: str) -> tuple[str | None, bool]:
+    """Return the colour a merchant name states, and whether it is unambiguous.
+
+    The second element is True when the name puts the colour where it can only
+    be a colour -- "Sleek Stiletto Heels in Navy" -- and False when the word
+    merely appears somewhere in the name, which may be branding.
+    """
+    text = f" {str(name or '').strip().casefold()} "
+    trailing = re.search(r"\bin\s+([a-z ]+?)\s*$", text)
+    if trailing:
+        phrase = trailing.group(1).strip()
+        for word, value in NAME_COLOR_KEYWORDS.items():
+            if re.search(rf"\b{re.escape(word)}\b", phrase):
+                return value, True
+
+    matched = {
+        value for word, value in NAME_COLOR_KEYWORDS.items()
+        if re.search(rf"\b{re.escape(word)}\b", text)
+        and word not in AMBIGUOUS_COLOR_WORDS
+    }
+    if len(matched) == 1:
+        return matched.pop(), False
+    return None, False
+
+
+def color_mismatch(name: str, primary_color: str | None) -> dict[str, Any] | None:
+    """Report a merchant name whose stated colour differs from the published one.
+
+    Returns None when there is no stated colour, none was published, or they
+    agree. ``multicolor`` never conflicts: a name naming one colour of a
+    multicoloured product is not wrong.
+    """
+    if not primary_color or primary_color == "multicolor":
+        return None
+    stated, unambiguous = name_color_signal(name)
+    if not stated or stated == primary_color:
+        return None
+    return {"name_color": stated, "primary_color": primary_color, "unambiguous": unambiguous}
+
 
 # How a signal relates to the visually determined product type.
 CORROBORATES = "corroborates"

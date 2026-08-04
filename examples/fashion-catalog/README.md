@@ -50,6 +50,10 @@ the summary counts the rest as `content_only_changes`.
 - **`reclassified_vs_baseline`** in the summary — three products whose
   classification changed against the previous catalog, including one that the
   previous catalog had filed under the wrong category.
+- **The colour flags** in `reconciliation.csv` — one high-confidence flag,
+  where a product named "…in Navy" was published as black, and two
+  low-confidence ones where the colour names a lens rather than the frame. The
+  high one is a real error; the low ones are correct.
 - **The outlier flags** in `reconciliation.csv` — products published despite a
   disagreeing merchant signal, with the disagreeing signal named.
 

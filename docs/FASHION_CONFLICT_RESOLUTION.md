@@ -129,6 +129,29 @@ Every omission is reported in `enrichment_review.csv` as
 is **filterable** — a missing `primary_color` removes the product from colour
 filters, whereas a missing `composition` only weakens semantic search.
 
+### Colour stated in the name
+
+`primary_color` is filterable, so a product named "…in Navy" published as
+`black` will not appear when a shopper filters for navy, while its own name
+promises it. When the merchant name states a colour the record denies, the
+product is **flagged, not held**, and reported in `enrichment_review.csv` as
+`published_with_color_mismatch`.
+
+Flagged rather than held because a colour word is weaker evidence than a product
+noun: it may describe a trim, a lens, or one colour of a multicoloured item.
+Confidence reflects that:
+
+| Confidence | When | Example |
+|---|---|---|
+| **high** | the name puts the colour where it can only describe the product | "Sleek Stiletto Heels **in Navy**" published as `black` |
+| **low** | the colour appears in the name but may name a component or be branding | "**Navy** Gradient Sunglasses" — black frame, navy lenses |
+
+Colour words that double as personal or brand names — Jade, Amber, Coral, Rose,
+Olive — count only in the unambiguous position, so "Jade Luxe Sunglasses" does
+not conflict with `gold`. Shades resolve to their enum value: ivory and cream
+are `white`, burgundy is `red`. A name citing one colour of a `multicolor`
+product never conflicts.
+
 ## Ambiguous identity
 
 When the merchant supplies no `product_id`, `sku`, or `id`, identity is derived

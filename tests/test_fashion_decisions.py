@@ -280,3 +280,27 @@ def test_compatible_types_do_not_count_as_contradiction(tmp_path, monkeypatch):
     summary = run_batch(csv_path, tmp_path, out)
 
     assert summary["ready"] == 1
+
+
+def test_color_mismatch_is_flagged_not_held(tmp_path, monkeypatch):
+    """A colour word is weaker evidence than a product noun, so the product ships."""
+    csv_path = _write_csv(
+        tmp_path,
+        "category,subcategory,name,description,price,image\n"
+        "footwear,shoes,Sleek Stiletto Heels in Navy,A navy stiletto,159.99,item.jpg\n",
+    )
+    _stub_audit(monkeypatch, tmp_path)
+    monkeypatch.setattr(batch_module, "enrich_product", lambda *a, **k: {
+        "product_type": {"value": "footwear.heels", "status": "accepted"},
+        "attributes": {"primary_color": {"value": "black", "status": "accepted"}},
+        "content": {"enriched_description": "Black pointed-toe stiletto heels."},
+        "conflicts": [],
+    })
+    out = tmp_path / "out"
+
+    summary = run_batch(csv_path, tmp_path, out)
+
+    assert summary["ready"] == 1
+    review = (out / "enrichment_review.csv").read_text()
+    assert "published_with_color_mismatch" in review
+    assert "primary_color" in review
