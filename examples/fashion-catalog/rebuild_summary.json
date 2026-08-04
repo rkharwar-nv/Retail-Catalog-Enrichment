@@ -36,8 +36,8 @@
     }
   ],
   "color_mismatches": {
-    "high_confidence": 1,
-    "low_confidence": 1
+    "high_confidence": 0,
+    "low_confidence": 0
   },
   "content_only_changes": 198,
   "added_vs_baseline": [
