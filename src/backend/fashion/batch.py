@@ -360,6 +360,9 @@ def _catalog_record(
     enriched_description = (result.get("content") or {}).get("enriched_description")
     if enriched_description:
         record["enriched_description"] = enriched_description
+    if decision is not None and getattr(decision, "attributes", None):
+        # A reviewer corrected an attribute the model got wrong.
+        record.update(decision.attributes)
     if decision is not None and getattr(decision, "name", None):
         # The original name is recorded in the decision ledger, not republished.
         # Nor is the merchant description, which describes the contradicted type.

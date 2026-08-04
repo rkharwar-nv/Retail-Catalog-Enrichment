@@ -226,6 +226,9 @@ as `content_only_changes`. Generated `record_id`s change whenever identity
 fields change, so that is reported once as `record_ids_changed` rather than
 flagged per row.
 
+An `attribute_overrides` column means a reviewer corrected a value the model got
+wrong; the decision file names who and why.
+
 A `color_flag` column means the product's name states a colour that its
 `primary_color` denies. These publish; `color_flag_confidence` is `high` when
 the name puts the colour where it can only describe the product, and `low` when

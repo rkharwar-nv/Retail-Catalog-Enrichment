@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from backend.fashion.taxonomy import ALL_ATTRIBUTES, ATTRIBUTE_VALUES
+
 DECISIONS_VERSION = "fashion-decisions/0.1"
 
 # Reason codes a reviewer is allowed to resolve. Everything else the gate can
@@ -52,6 +54,7 @@ class Decision:
     classification: str | None = None
     record_id: str | None = None
     name: str | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
 
     def resolves_reason(self, reason: str) -> bool:
         return reason in self.resolves
@@ -139,6 +142,21 @@ def load_decisions(path: Path) -> DecisionRegistry:
                 "supplies no corrected 'name'. Publishing a product whose name contradicts its "
                 "own category leaves the catalog incoherent, so the corrected name is required."
             )
+        attributes = payload.get("attributes") or {}
+        if not isinstance(attributes, dict):
+            raise DecisionError(f"Decision for row {source_row}: 'attributes' must be an object.")
+        for attribute, value in attributes.items():
+            if attribute not in ALL_ATTRIBUTES:
+                raise DecisionError(
+                    f"Decision for row {source_row} overrides unknown attribute {attribute!r}."
+                )
+            allowed = ATTRIBUTE_VALUES.get(attribute)
+            if allowed and value not in allowed:
+                raise DecisionError(
+                    f"Decision for row {source_row} sets {attribute}={value!r}, which is not one "
+                    f"of {sorted(allowed)}."
+                )
+
         registry.decisions[source_row] = Decision(
             source_row=source_row,
             resolves=resolves,
@@ -147,6 +165,7 @@ def load_decisions(path: Path) -> DecisionRegistry:
             classification=classification,
             record_id=payload.get("record_id"),
             name=payload.get("name"),
+            attributes=attributes,
         )
     return registry
 

@@ -56,10 +56,27 @@ Each subsequent line is one adjudication:
 | `classification` | no | `category/subcategory` override for the published record |
 | `record_id` | no | Stable id, used to distinguish otherwise-identical rows |
 | `name` | conditional | Corrected product name; **required** when resolving `NAME_CONTRADICTS_CLASSIFICATION` |
+| `attributes` | no | Attribute values to correct, e.g. `{"primary_color": "brown"}` |
 
 When a decision supplies a `name`, the corrected name is published, the original
 is recorded here and in the run ledger rather than republished, and the merchant
 `description` is dropped because it describes the contradicted product type.
+
+### Correcting an attribute
+
+A decision may correct an attribute the model got wrong, with an empty
+`resolves` when the product was published anyway:
+
+```json
+{"source_row": 62, "resolves": [], "attributes": {"primary_color": "brown"},
+ "reviewer": "you@example.com",
+ "rationale": "Gold frame, brown lenses; the lenses dominate and the name says Mocha."}
+```
+
+Values are checked against the attribute's enum when it has one, so a typo or an
+off-taxonomy value fails at load time rather than reaching the catalog. The
+override is recorded in the run ledger, so a corrected value always has a named
+author and a reason.
 
 ## What a reviewer may and may not resolve
 

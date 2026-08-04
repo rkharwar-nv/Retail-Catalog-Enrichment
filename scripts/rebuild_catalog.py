@@ -264,6 +264,13 @@ def rebuild(
             if field not in NON_ATTRIBUTE_FIELDS and value not in (None, "", []):
                 published[field] = value
         published["enriched_description"] = record["enriched_description"]
+        if decision and decision.attributes:
+            # A reviewer corrected an attribute the model got wrong. Recorded in
+            # the ledger, so the published value always has a named author.
+            published.update(decision.attributes)
+            entry["attribute_overrides"] = ", ".join(
+                f"{k}={v!r}" for k, v in sorted(decision.attributes.items())
+            )
 
         catalog.append(published)
         entry["published_name"] = published["name"]
@@ -348,7 +355,8 @@ def rebuild(
         "in_baseline", "gate_reasons",
         "source_category", "visual_classification", "classification", "name_signal",
         "name_verdict", "subcategory_verdict", "outlier", "resolved_by", "reviewer", "reason",
-        "reason_detail", "color_flag", "color_flag_confidence", "changed_fields",
+        "reason_detail", "color_flag", "color_flag_confidence", "attribute_overrides",
+        "changed_fields",
         "merchant_name", "corrected_name", "enrichment_run",
     ]
     with (output_dir / "reconciliation.csv").open("w", newline="", encoding="utf-8") as handle:
@@ -362,6 +370,8 @@ def rebuild(
                 entry["status"] in {"ADDED", "DROPPED"}
                 or entry.get("contested")
                 or entry.get("color_flag")
+                or entry.get("attribute_overrides")
+                or entry.get("resolved_by") == "reviewed_decision"
                 or "classification " in (entry["changes"] or "")
                 or "name " in (entry["changes"] or "")
             )

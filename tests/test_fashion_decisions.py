@@ -304,3 +304,62 @@ def test_color_mismatch_is_flagged_not_held(tmp_path, monkeypatch):
     review = (out / "enrichment_review.csv").read_text()
     assert "published_with_color_mismatch" in review
     assert "primary_color" in review
+
+
+ATTRIBUTE_DECISION = {
+    "source_row": 2,
+    "resolves": [],
+    "attributes": {"primary_color": "brown"},
+    "reviewer": "reviewer@example.com",
+    "rationale": "Image shows a gold frame with brown lenses; the lenses dominate.",
+}
+
+
+def test_attribute_override_is_published(tmp_path, monkeypatch):
+    csv_path = _write_csv(
+        tmp_path,
+        "category,subcategory,name,description,price,image\n"
+        "accessories,sunglasses,Mocha Gradient Sunglasses,Gradient aviators,119.99,item.jpg\n",
+    )
+    _stub_audit(monkeypatch, tmp_path)
+    monkeypatch.setattr(batch_module, "enrich_product", lambda *a, **k: {
+        "product_type": {"value": "eyewear.sunglasses", "status": "accepted"},
+        "attributes": {"primary_color": {"value": "gold", "status": "accepted"}},
+        "content": {"enriched_description": "Gold aviator frame with gradient lenses."},
+        "conflicts": [],
+    })
+    decisions = _write_decisions(tmp_path, _sha(csv_path), ATTRIBUTE_DECISION)
+    out = tmp_path / "out"
+
+    run_batch(csv_path, tmp_path, out, decisions_path=decisions)
+
+    record = json.loads((out / "enriched_products.jsonl").read_text().strip())
+    assert record["primary_color"] == "brown"
+
+
+def test_attribute_override_must_use_a_valid_enum_value(tmp_path):
+    csv_path = _write_csv(tmp_path)
+    path = _write_decisions(
+        tmp_path, _sha(csv_path),
+        {**ATTRIBUTE_DECISION, "attributes": {"primary_color": "mocha"}},
+    )
+    with pytest.raises(DecisionError, match="not one of"):
+        load_decisions(path)
+
+
+def test_unknown_attribute_is_rejected(tmp_path):
+    csv_path = _write_csv(tmp_path)
+    path = _write_decisions(
+        tmp_path, _sha(csv_path), {**ATTRIBUTE_DECISION, "attributes": {"colour": "brown"}},
+    )
+    with pytest.raises(DecisionError, match="unknown attribute"):
+        load_decisions(path)
+
+
+def test_attributes_must_be_an_object(tmp_path):
+    csv_path = _write_csv(tmp_path)
+    path = _write_decisions(
+        tmp_path, _sha(csv_path), {**ATTRIBUTE_DECISION, "attributes": ["primary_color"]},
+    )
+    with pytest.raises(DecisionError, match="must be an object"):
+        load_decisions(path)
